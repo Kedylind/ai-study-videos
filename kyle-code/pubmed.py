@@ -1,6 +1,7 @@
 """
 Fetch paper content from PubMed Central (PMC).
 """
+
 import json
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -11,6 +12,7 @@ import pubmed_parser as pp
 
 class PMCNotFoundError(Exception):
     """Raised when a paper is not available in PubMed Central."""
+
     pass
 
 
@@ -52,7 +54,7 @@ def fetch_paper(paper_id: str, output_dir: str) -> Dict:
     # Step 4: Save to output directory
     output_path = Path(output_dir)
     json_path = output_path / "paper.json"
-    with open(json_path, 'w') as f:
+    with open(json_path, "w") as f:
         json.dump(paper_data, f, indent=2)
 
     return paper_data
@@ -107,7 +109,7 @@ def download_pmc_xml(pmcid: str, output_dir: str) -> str:
     with urllib.request.urlopen(url) as response:
         xml_data = response.read()
 
-    with open(xml_path, 'wb') as f:
+    with open(xml_path, "wb") as f:
         f.write(xml_data)
 
     return str(xml_path)
@@ -133,20 +135,20 @@ def parse_pmc_xml(xml_path: str, pmid: Optional[str], pmcid: str) -> Dict:
     parsed = pp.parse_pubmed_xml(xml_path)
 
     # Extract title
-    title = parsed.get('full_title', 'Unknown')
+    title = parsed.get("full_title", "Unknown")
 
     # If pmid wasn't provided, try to extract it from parsed data
     if not pmid:
-        pmid = parsed.get('pmid', None)
+        pmid = parsed.get("pmid", None)
 
     # Extract full text from abstract and body
-    abstract = parsed.get('abstract', '')
+    abstract = parsed.get("abstract", "")
 
     # Parse paragraphs from XML for full text
     paragraphs = pp.parse_pubmed_paragraph(xml_path, all_paragraph=True)
 
     # Concatenate all paragraph text
-    body_text = '\n\n'.join([p['text'] for p in paragraphs if p.get('text')])
+    body_text = "\n\n".join([p["text"] for p in paragraphs if p.get("text")])
 
     # Combine abstract and body
     full_text = f"{abstract}\n\n{body_text}" if abstract else body_text
@@ -158,33 +160,31 @@ def parse_pmc_xml(xml_path: str, pmid: Optional[str], pmcid: str) -> Dict:
 
     # Search for fig elements (namespace-agnostic)
     for fig in root.iter():
-        if fig.tag.endswith('}fig') or fig.tag == 'fig':
-            fig_id = fig.get('id', '')
+        if fig.tag.endswith("}fig") or fig.tag == "fig":
+            fig_id = fig.get("id", "")
 
             # Get caption
             caption = ""
             for elem in fig.iter():
-                if elem.tag.endswith('}caption') or elem.tag == 'caption':
+                if elem.tag.endswith("}caption") or elem.tag == "caption":
                     caption = "".join(elem.itertext())
                     break
 
             # Get image URL (try graphic element)
             for elem in fig.iter():
-                if elem.tag.endswith('}graphic') or elem.tag == 'graphic':
+                if elem.tag.endswith("}graphic") or elem.tag == "graphic":
                     # Try different xlink attribute formats
                     xlink_href = (
-                        elem.get("{http://www.w3.org/1999/xlink}href") or
-                        elem.get("href") or
-                        ""
+                        elem.get("{http://www.w3.org/1999/xlink}href")
+                        or elem.get("href")
+                        or ""
                     )
                     if xlink_href:
                         # Construct full URL to PMC image
                         url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/bin/{xlink_href}"
-                        figures.append({
-                            "id": fig_id,
-                            "url": url,
-                            "caption": caption.strip()
-                        })
+                        figures.append(
+                            {"id": fig_id, "url": url, "caption": caption.strip()}
+                        )
                         break  # Only take first graphic per figure
 
     return {
@@ -192,5 +192,5 @@ def parse_pmc_xml(xml_path: str, pmid: Optional[str], pmcid: str) -> Dict:
         "pmcid": pmcid,
         "title": title.strip(),
         "full_text": full_text.strip(),
-        "figures": figures
+        "figures": figures,
     }

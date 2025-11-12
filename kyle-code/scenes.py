@@ -25,10 +25,7 @@ class Scene:
     visual_content: str
 
 
-def generate_scenes(
-    paper_data: dict,
-    api_key: str | None = None
-) -> List[Scene]:
+def generate_scenes(paper_data: dict, api_key: str | None = None) -> List[Scene]:
     """
     Generate 4-10 scenes from paper data using Gemini.
 
@@ -47,19 +44,19 @@ def generate_scenes(
         Exception: If Gemini API call fails
     """
     if api_key is None:
-        api_key = os.getenv('GEMINI_API_KEY')
+        api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable not set")
 
-    if not paper_data.get('title') or not paper_data.get('full_text'):
+    if not paper_data.get("title") or not paper_data.get("full_text"):
         raise ValueError("paper_data must contain 'title' and 'full_text' keys")
 
     # Configure Gemini client
     client = genai.Client(api_key=api_key)
 
     # Truncate paper text if too long
-    full_text = paper_data['full_text']
+    full_text = paper_data["full_text"]
     if len(full_text) > MAX_PAPER_LENGTH:
         logger.warning(
             f"Paper text exceeds {MAX_PAPER_LENGTH} chars, truncating from {len(full_text)}"
@@ -126,16 +123,14 @@ Return ONLY a JSON object with this structure:
     logger.info("Calling Gemini API to generate scenes")
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model="gemini-2.0-flash-exp",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
 
         # Parse response
         response_data = json.loads(response.text)
-        scenes_data = response_data.get('scenes', [])
+        scenes_data = response_data.get("scenes", [])
 
         if not scenes_data:
             raise ValueError("Gemini returned no scenes")
@@ -145,21 +140,25 @@ Return ONLY a JSON object with this structure:
         # Validate and create Scene objects
         scenes = []
         for scene_data in scenes_data:
-            if not all(k in scene_data for k in ['text', 'visual_type', 'visual_content']):
+            if not all(
+                k in scene_data for k in ["text", "visual_type", "visual_content"]
+            ):
                 logger.warning(f"Skipping invalid scene: {scene_data}")
                 continue
 
-            if scene_data['visual_type'] != 'generated':
+            if scene_data["visual_type"] != "generated":
                 logger.warning(
                     f"Invalid visual_type '{scene_data['visual_type']}', defaulting to 'generated'"
                 )
-                scene_data['visual_type'] = 'generated'
+                scene_data["visual_type"] = "generated"
 
-            scenes.append(Scene(
-                text=scene_data['text'],
-                visual_type=scene_data['visual_type'],
-                visual_content=scene_data['visual_content']
-            ))
+            scenes.append(
+                Scene(
+                    text=scene_data["text"],
+                    visual_type=scene_data["visual_type"],
+                    visual_content=scene_data["visual_content"],
+                )
+            )
 
         if not scenes:
             raise ValueError("No valid scenes generated")
@@ -189,7 +188,7 @@ def save_scenes(scenes: List[Scene], output_path: Path) -> None:
         scenes_data = [asdict(scene) for scene in scenes]
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(scenes_data, f, indent=2, ensure_ascii=False)
 
         logger.info(f"Saved {len(scenes)} scenes to {output_path}")
@@ -217,7 +216,7 @@ def load_scenes(input_path: Path) -> List[Scene]:
         raise FileNotFoundError(f"Scene file not found: {input_path}")
 
     try:
-        with open(input_path, 'r', encoding='utf-8') as f:
+        with open(input_path, "r", encoding="utf-8") as f:
             scenes_data = json.load(f)
 
         scenes = [Scene(**scene_data) for scene_data in scenes_data]

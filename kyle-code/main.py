@@ -14,8 +14,7 @@ from captions import add_captions_to_all_scenes
 from pipeline import orchestrate_pipeline, PipelineError
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
@@ -26,10 +25,20 @@ def cli():
 
 
 @cli.command()
-@click.option('--prompt', '-p', required=True, help='Text prompt for video generation')
-@click.option('--output', '-o', default='output.mp4', help='Output video file path (default: output.mp4)')
-@click.option('--model', '-m', default='veo3.1', help='Model to use for generation')
-@click.option('--poll-interval', default=1, type=int, help='Seconds between status checks (default: 1)')
+@click.option("--prompt", "-p", required=True, help="Text prompt for video generation")
+@click.option(
+    "--output",
+    "-o",
+    default="output.mp4",
+    help="Output video file path (default: output.mp4)",
+)
+@click.option("--model", "-m", default="veo3.1", help="Model to use for generation")
+@click.option(
+    "--poll-interval",
+    default=1,
+    type=int,
+    help="Seconds between status checks (default: 1)",
+)
 def generate(prompt, output, model, poll_interval):
     """Generate a video from a text prompt using Runway."""
     client = RunwayML()
@@ -50,13 +59,13 @@ def generate(prompt, output, model, poll_interval):
     time.sleep(poll_interval)
     task = client.tasks.retrieve(task_id)
 
-    with click.progressbar(length=100, label='Generating video') as bar:
-        while task.status not in ['SUCCEEDED', 'FAILED']:
+    with click.progressbar(length=100, label="Generating video") as bar:
+        while task.status not in ["SUCCEEDED", "FAILED"]:
             time.sleep(poll_interval)
             task = client.tasks.retrieve(task_id)
 
-    if task.status == 'FAILED':
-        click.secho(f"✗ Video generation failed: {task}", fg='red', err=True)
+    if task.status == "FAILED":
+        click.secho(f"✗ Video generation failed: {task}", fg="red", err=True)
         raise click.Abort()
 
     # Download the generated video
@@ -64,36 +73,41 @@ def generate(prompt, output, model, poll_interval):
     video_url = task.output[0] if isinstance(task.output, list) else task.output
 
     import requests
+
     response = requests.get(video_url)
     response.raise_for_status()
 
-    with open(output, 'wb') as f:
+    with open(output, "wb") as f:
         f.write(response.content)
 
-    click.secho(f"✓ Generated video saved to {output}", fg='green', bold=True)
+    click.secho(f"✓ Generated video saved to {output}", fg="green", bold=True)
 
 
 @cli.command()
-@click.argument('prompt_file', type=click.File('r'))
-@click.option('--output', '-o', default='output.mp4', help='Output video file path')
-@click.option('--model', '-m', default='veo3.1', help='Model to use for generation')
-@click.option('--poll-interval', default=1, type=int, help='Seconds between status checks')
+@click.argument("prompt_file", type=click.File("r"))
+@click.option("--output", "-o", default="output.mp4", help="Output video file path")
+@click.option("--model", "-m", default="veo3.1", help="Model to use for generation")
+@click.option(
+    "--poll-interval", default=1, type=int, help="Seconds between status checks"
+)
 def generate_from_file(prompt_file, output, model, poll_interval):
     """Generate a video from a prompt in a text file."""
     prompt = prompt_file.read().strip()
 
     if not prompt:
-        click.secho("Error: Prompt file is empty", fg='red', err=True)
+        click.secho("Error: Prompt file is empty", fg="red", err=True)
         raise click.Abort()
 
     # Call the generate function with the file content
     ctx = click.get_current_context()
-    ctx.invoke(generate, prompt=prompt, output=output, model=model, poll_interval=poll_interval)
+    ctx.invoke(
+        generate, prompt=prompt, output=output, model=model, poll_interval=poll_interval
+    )
 
 
 @cli.command()
-@click.argument('paper_id')
-@click.argument('output_dir')
+@click.argument("paper_id")
+@click.argument("output_dir")
 def fetch_paper_cmd(paper_id, output_dir):
     """Fetch a paper from PubMed Central by PMID or PMCID.
 
@@ -109,7 +123,7 @@ def fetch_paper_cmd(paper_id, output_dir):
 
         paper_data = fetch_paper(paper_id, output_dir)
 
-        click.secho(f"\n✓ Successfully fetched paper!", fg='green', bold=True)
+        click.secho(f"\n✓ Successfully fetched paper!", fg="green", bold=True)
         click.echo(f"  Title: {paper_data['title']}")
         click.echo(f"  PMCID: {paper_data['pmcid']}")
         click.echo(f"  Full text length: {len(paper_data['full_text'])} characters")
@@ -118,21 +132,21 @@ def fetch_paper_cmd(paper_id, output_dir):
         click.echo(f"    - paper.json (metadata + full text)")
         click.echo(f"    - paper.xml (raw XML)")
 
-        if paper_data['figures']:
+        if paper_data["figures"]:
             click.echo(f"\n  Figure URLs:")
-            for fig in paper_data['figures']:
+            for fig in paper_data["figures"]:
                 click.echo(f"    - {fig['id']}: {fig['url']}")
 
     except PMCNotFoundError as e:
-        click.secho(f"✗ Error: {e}", fg='red', err=True)
+        click.secho(f"✗ Error: {e}", fg="red", err=True)
         raise click.Abort()
     except Exception as e:
-        click.secho(f"✗ Unexpected error: {e}", fg='red', err=True)
+        click.secho(f"✗ Unexpected error: {e}", fg="red", err=True)
         raise click.Abort()
 
 
 @cli.command()
-@click.argument('paper_dir', type=click.Path(exists=True))
+@click.argument("paper_dir", type=click.Path(exists=True))
 def generate_script(paper_dir):
     """Generate video script from paper data in PAPER_DIR.
 
@@ -146,16 +160,18 @@ def generate_script(paper_dir):
     """
     try:
         paper_path = Path(paper_dir)
-        paper_file = paper_path / 'paper.json'
+        paper_file = paper_path / "paper.json"
 
         if not paper_file.exists():
-            click.secho(f"✗ Error: paper.json not found in {paper_dir}", fg='red', err=True)
+            click.secho(
+                f"✗ Error: paper.json not found in {paper_dir}", fg="red", err=True
+            )
             click.echo("Run 'fetch-paper' command first to download paper data")
             raise click.Abort()
 
         # Load paper data
         click.echo(f"Loading paper from {paper_file}...")
-        with open(paper_file, 'r', encoding='utf-8') as f:
+        with open(paper_file, "r", encoding="utf-8") as f:
             paper_data = json.load(f)
 
         click.echo(f"Paper: {paper_data['title']}")
@@ -165,35 +181,41 @@ def generate_script(paper_dir):
         scene_list = generate_scenes(paper_data)
 
         # Save to script.json
-        script_file = paper_path / 'script.json'
+        script_file = paper_path / "script.json"
         save_scenes(scene_list, script_file)
 
-        click.secho(f"\n✓ Generated {len(scene_list)} scenes", fg='green', bold=True)
-        click.secho(f"✓ Saved to: {script_file}", fg='green', bold=True)
+        click.secho(f"\n✓ Generated {len(scene_list)} scenes", fg="green", bold=True)
+        click.secho(f"✓ Saved to: {script_file}", fg="green", bold=True)
 
         # Preview scenes
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
         click.echo("SCENE PREVIEW")
-        click.echo("="*60)
+        click.echo("=" * 60)
 
         for i, scene in enumerate(scene_list, 1):
             click.echo(f"\nScene {i}:")
             click.echo(f"  Text: {scene.text}")
             click.echo(f"  Visual: {scene.visual_type}")
-            prompt_preview = scene.visual_content[:100] + "..." if len(scene.visual_content) > 100 else scene.visual_content
+            prompt_preview = (
+                scene.visual_content[:100] + "..."
+                if len(scene.visual_content) > 100
+                else scene.visual_content
+            )
             click.echo(f"  Prompt: {prompt_preview}")
 
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
 
     except Exception as e:
         logging.exception("Error generating script")
-        click.secho(f"✗ Error: {e}", fg='red', err=True)
+        click.secho(f"✗ Error: {e}", fg="red", err=True)
         raise click.Abort()
 
 
 @cli.command()
-@click.argument('paper_dir', type=click.Path(exists=True))
-@click.option('--voice', '-v', default='Kore', help='Voice to use for TTS (default: Kore)')
+@click.argument("paper_dir", type=click.Path(exists=True))
+@click.option(
+    "--voice", "-v", default="Kore", help="Voice to use for TTS (default: Kore)"
+)
 def generate_audio_cmd(paper_dir, voice):
     """Generate audio narration from script in PAPER_DIR.
 
@@ -214,10 +236,12 @@ def generate_audio_cmd(paper_dir, voice):
     """
     try:
         paper_path = Path(paper_dir)
-        script_file = paper_path / 'script.json'
+        script_file = paper_path / "script.json"
 
         if not script_file.exists():
-            click.secho(f"✗ Error: script.json not found in {paper_dir}", fg='red', err=True)
+            click.secho(
+                f"✗ Error: script.json not found in {paper_dir}", fg="red", err=True
+            )
             click.echo("Run 'generate-script' command first to create the script")
             raise click.Abort()
 
@@ -232,42 +256,65 @@ def generate_audio_cmd(paper_dir, voice):
         result = generate_audio(scenes, paper_path, voice=voice)
 
         # Save metadata
-        metadata_file = paper_path / 'audio_metadata.json'
+        metadata_file = paper_path / "audio_metadata.json"
         save_audio_metadata(result, metadata_file)
 
-        click.secho(f"\n✓ Audio generation complete!", fg='green', bold=True)
+        click.secho(f"\n✓ Audio generation complete!", fg="green", bold=True)
         click.echo(f"  Total duration: {result.total_duration:.2f}s")
         click.echo(f"  Voice: {result.voice}")
-        click.secho(f"\n✓ Output saved to:", fg='green', bold=True)
+        click.secho(f"\n✓ Output saved to:", fg="green", bold=True)
         click.echo(f"  - {result.full_audio_path}")
         click.echo(f"  - {metadata_file}")
 
         # Display scene timing summary
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
         click.echo("SCENE TIMING & VISUALS")
-        click.echo("="*60)
+        click.echo("=" * 60)
 
         for sb in result.scene_boundaries:
-            click.echo(f"\nScene {sb.scene_index}: {sb.start_time:.2f}s - {sb.end_time:.2f}s (clip: {sb.clip_duration:.2f}s)")
+            click.echo(
+                f"\nScene {sb.scene_index}: {sb.start_time:.2f}s - {sb.end_time:.2f}s (clip: {sb.clip_duration:.2f}s)"
+            )
             text_preview = sb.text[:70] + "..." if len(sb.text) > 70 else sb.text
             click.echo(f"  Text: {text_preview}")
             click.echo(f"  Visual: {sb.visual_type}")
-            visual_preview = sb.visual_content[:80] + "..." if len(sb.visual_content) > 80 else sb.visual_content
+            visual_preview = (
+                sb.visual_content[:80] + "..."
+                if len(sb.visual_content) > 80
+                else sb.visual_content
+            )
             click.echo(f"  Prompt: {visual_preview}")
 
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
 
     except Exception as e:
         logging.exception("Error generating audio")
-        click.secho(f"✗ Error: {e}", fg='red', err=True)
+        click.secho(f"✗ Error: {e}", fg="red", err=True)
         raise click.Abort()
 
 
 @cli.command()
-@click.argument('metadata_file', type=click.Path(exists=True))
-@click.option('--output-dir', '-o', default=None, help='Output directory for video clips (default: clips/ in same directory as metadata)')
-@click.option('--max-workers', '-w', default=5, type=int, help='Maximum parallel video generations (default: 5)')
-@click.option('--poll-interval', '-p', default=1, type=int, help='Seconds between status checks (default: 1)')
+@click.argument("metadata_file", type=click.Path(exists=True))
+@click.option(
+    "--output-dir",
+    "-o",
+    default=None,
+    help="Output directory for video clips (default: clips/ in same directory as metadata)",
+)
+@click.option(
+    "--max-workers",
+    "-w",
+    default=5,
+    type=int,
+    help="Maximum parallel video generations (default: 5)",
+)
+@click.option(
+    "--poll-interval",
+    "-p",
+    default=1,
+    type=int,
+    help="Seconds between status checks (default: 1)",
+)
 def generate_videos_cmd(metadata_file, output_dir, max_workers, poll_interval):
     """Generate video clips from audio metadata.
 
@@ -304,49 +351,77 @@ def generate_videos_cmd(metadata_file, output_dir, max_workers, poll_interval):
             metadata_path,
             output_dir=output_path,
             max_workers=max_workers,
-            poll_interval=poll_interval
+            poll_interval=poll_interval,
         )
 
         # Save video metadata
-        video_metadata_file = Path(result.output_dir) / 'video_metadata.json'
+        video_metadata_file = Path(result.output_dir) / "video_metadata.json"
         save_video_metadata(result, video_metadata_file)
 
-        click.secho(f"\n✓ Video generation complete!", fg='green', bold=True)
+        click.secho(f"\n✓ Video generation complete!", fg="green", bold=True)
         click.echo(f"  Total clips: {result.total_clips}")
         click.echo(f"  Output directory: {result.output_dir}")
-        click.secho(f"\n✓ Saved metadata to:", fg='green', bold=True)
+        click.secho(f"\n✓ Saved metadata to:", fg="green", bold=True)
         click.echo(f"  - {video_metadata_file}")
 
         # Display clip summary
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
         click.echo("GENERATED CLIPS")
-        click.echo("="*60)
+        click.echo("=" * 60)
 
         for clip in result.clips:
             click.echo(f"\nScene {clip.scene_index}: {clip.visual_type}")
             if clip.clip_path:
                 click.echo(f"  File: {clip.clip_path}")
                 click.echo(f"  Duration: {clip.duration:.2f}s")
-                prompt_preview = clip.prompt[:80] + "..." if len(clip.prompt) > 80 else clip.prompt
+                prompt_preview = (
+                    clip.prompt[:80] + "..." if len(clip.prompt) > 80 else clip.prompt
+                )
                 click.echo(f"  Prompt: {prompt_preview}")
             else:
                 click.echo(f"  (Figure - will be added during composition)")
 
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
 
     except Exception as e:
         logging.exception("Error generating videos")
-        click.secho(f"✗ Error: {e}", fg='red', err=True)
+        click.secho(f"✗ Error: {e}", fg="red", err=True)
         raise click.Abort()
 
 
 @cli.command()
-@click.argument('metadata_file', type=click.Path(exists=True))
-@click.option('--clips-dir', '-c', default=None, help='Directory containing scene videos (default: clips/ in same directory as metadata)')
-@click.option('--output-dir', '-o', default=None, help='Output directory for captioned videos (default: clips_captioned/ in same directory as metadata)')
-@click.option('--max-words', '-m', default=2, type=int, help='Maximum words per caption segment (default: 2, TikTok style)')
-@click.option('--font-size', '-f', default=100, type=int, help='Font size for captions (default: 100)')
-@click.option('--no-merge', is_flag=True, help='Skip merging captioned video clips into a single final video')
+@click.argument("metadata_file", type=click.Path(exists=True))
+@click.option(
+    "--clips-dir",
+    "-c",
+    default=None,
+    help="Directory containing scene videos (default: clips/ in same directory as metadata)",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    default=None,
+    help="Output directory for captioned videos (default: clips_captioned/ in same directory as metadata)",
+)
+@click.option(
+    "--max-words",
+    "-m",
+    default=2,
+    type=int,
+    help="Maximum words per caption segment (default: 2, TikTok style)",
+)
+@click.option(
+    "--font-size",
+    "-f",
+    default=100,
+    type=int,
+    help="Font size for captions (default: 100)",
+)
+@click.option(
+    "--no-merge",
+    is_flag=True,
+    help="Skip merging captioned video clips into a single final video",
+)
 def add_captions(metadata_file, clips_dir, output_dir, max_words, font_size, no_merge):
     """Add TikTok-style captions to video clips.
 
@@ -389,11 +464,11 @@ def add_captions(metadata_file, clips_dir, output_dir, max_words, font_size, no_
             output_dir=output_path,
             max_words=max_words,
             font_size=font_size,
-            merge=not no_merge
+            merge=not no_merge,
         )
 
         if not captioned_videos:
-            click.secho("✗ No videos were captioned", fg='yellow')
+            click.secho("✗ No videos were captioned", fg="yellow")
             click.echo("Make sure video clips exist in the clips directory")
             return
 
@@ -401,43 +476,67 @@ def add_captions(metadata_file, clips_dir, output_dir, max_words, font_size, no_
         if captioned_videos:
             output_dir_path = captioned_videos[0].parent
 
-        click.secho(f"\n✓ Caption generation complete!", fg='green', bold=True)
+        click.secho(f"\n✓ Caption generation complete!", fg="green", bold=True)
         click.echo(f"  Captioned videos: {len(captioned_videos)}")
         click.echo(f"  Output directory: {output_dir_path}")
 
         if not no_merge:
             final_video_path = metadata_path.parent / "final_video.mp4"
-            click.secho(f"\n✓ Final merged video:", fg='green', bold=True)
+            click.secho(f"\n✓ Final merged video:", fg="green", bold=True)
             click.echo(f"  {final_video_path}")
 
         # Display captioned video summary
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
         click.echo("CAPTIONED VIDEOS")
-        click.echo("="*60)
+        click.echo("=" * 60)
 
         for video_path in captioned_videos:
             click.echo(f"  ✓ {video_path.name}")
 
-        click.echo("\n" + "="*60)
+        click.echo("\n" + "=" * 60)
 
     except Exception as e:
         logging.exception("Error adding captions")
-        click.secho(f"✗ Error: {e}", fg='red', err=True)
+        click.secho(f"✗ Error: {e}", fg="red", err=True)
         raise click.Abort()
 
 
 @cli.command()
-@click.argument('pmid')
-@click.argument('output_dir', type=click.Path())
-@click.option('--skip-existing/--no-skip-existing', default=True,
-              help='Skip already completed steps (default: skip)')
-@click.option('--stop-after', type=click.Choice([
-    'fetch-paper', 'generate-script', 'generate-audio',
-    'generate-videos', 'add-captions'
-]), help='Stop pipeline after this step')
-@click.option('--voice', '-v', default='Kore', help='Gemini TTS voice to use (default: Kore)')
-@click.option('--max-workers', '-w', default=5, type=int, help='Maximum parallel video generation workers (default: 5)')
-@click.option('--no-merge', is_flag=True, help='Skip merging video clips into a single final video')
+@click.argument("pmid")
+@click.argument("output_dir", type=click.Path())
+@click.option(
+    "--skip-existing/--no-skip-existing",
+    default=True,
+    help="Skip already completed steps (default: skip)",
+)
+@click.option(
+    "--stop-after",
+    type=click.Choice(
+        [
+            "fetch-paper",
+            "generate-script",
+            "generate-audio",
+            "generate-videos",
+            "add-captions",
+        ]
+    ),
+    help="Stop pipeline after this step",
+)
+@click.option(
+    "--voice", "-v", default="Kore", help="Gemini TTS voice to use (default: Kore)"
+)
+@click.option(
+    "--max-workers",
+    "-w",
+    default=5,
+    type=int,
+    help="Maximum parallel video generation workers (default: 5)",
+)
+@click.option(
+    "--no-merge",
+    is_flag=True,
+    help="Skip merging video clips into a single final video",
+)
 def generate_video(
     pmid: str,
     output_dir: str,
@@ -486,17 +585,23 @@ def generate_video(
             max_workers=max_workers,
             merge=not no_merge,
         )
-        click.secho(f"✓ Pipeline complete! Videos in {output_path}", fg='green', bold=True)
+        click.secho(
+            f"✓ Pipeline complete! Videos in {output_path}", fg="green", bold=True
+        )
         if not no_merge:
-            click.secho(f"✓ Final merged video: {output_path}/final_video.mp4", fg='green', bold=True)
+            click.secho(
+                f"✓ Final merged video: {output_path}/final_video.mp4",
+                fg="green",
+                bold=True,
+            )
     except PipelineError as e:
-        click.secho(f"✗ Pipeline failed: {e}", fg='red', err=True)
+        click.secho(f"✗ Pipeline failed: {e}", fg="red", err=True)
         raise click.Abort()
     except Exception as e:
-        click.secho(f"✗ Unexpected error: {e}", fg='red', err=True)
+        click.secho(f"✗ Unexpected error: {e}", fg="red", err=True)
         logging.exception("Unexpected error in pipeline")
         raise click.Abort()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli()

@@ -17,7 +17,7 @@ from audio import load_audio_metadata, SceneAudio
 logger = logging.getLogger(__name__)
 
 # Video generation configuration
-VIDEO_MODEL = 'veo3.1'
+VIDEO_MODEL = "veo3.1"
 POLL_INTERVAL = 1  # seconds between status checks
 MAX_WORKERS = 5  # Runway has better rate limits than Google Veo
 
@@ -25,6 +25,7 @@ MAX_WORKERS = 5  # Runway has better rate limits than Google Veo
 @dataclass(frozen=True)
 class VideoClip:
     """Information about a generated video clip."""
+
     scene_index: int
     clip_path: str
     duration: float
@@ -35,6 +36,7 @@ class VideoClip:
 @dataclass(frozen=True)
 class VideoGenerationResult:
     """Complete video generation result."""
+
     clips: List[VideoClip]
     output_dir: str
     total_clips: int
@@ -44,7 +46,7 @@ def _generate_single_video(
     client: RunwayML,
     scene_audio: SceneAudio,
     output_dir: Path,
-    poll_interval: int = POLL_INTERVAL
+    poll_interval: int = POLL_INTERVAL,
 ) -> VideoClip:
     """
     Generate a single video clip for a scene.
@@ -76,7 +78,7 @@ def _generate_single_video(
             clip_path=str(clip_path),
             duration=scene_audio.clip_duration,
             prompt=prompt,
-            visual_type=scene_audio.visual_type
+            visual_type=scene_audio.visual_type,
         )
 
     logger.info(f"Scene {scene_idx}: Starting video generation...")
@@ -89,7 +91,9 @@ def _generate_single_video(
         # Veo3.1 only supports duration values of 4, 6, or 8 seconds
         # Choose the closest allowed duration to the audio clip length
         allowed_durations = [4, 6, 8]
-        video_duration = min(allowed_durations, key=lambda x: abs(x - scene_audio.clip_duration))
+        video_duration = min(
+            allowed_durations, key=lambda x: abs(x - scene_audio.clip_duration)
+        )
 
         task = client.text_to_video.create(
             model=VIDEO_MODEL,
@@ -97,7 +101,9 @@ def _generate_single_video(
             ratio="720:1280",  # Vertical video for TikTok/Instagram Reels (9:16)
             duration=video_duration,  # Closest allowed duration (4, 6, or 8 seconds)
         )
-        logger.debug(f"Scene {scene_idx}: Requested video duration: {video_duration}s (audio: {scene_audio.clip_duration:.2f}s)")
+        logger.debug(
+            f"Scene {scene_idx}: Requested video duration: {video_duration}s (audio: {scene_audio.clip_duration:.2f}s)"
+        )
         task_id = task.id
         logger.debug(f"Scene {scene_idx}: Task created with ID {task_id}")
 
@@ -105,12 +111,12 @@ def _generate_single_video(
         time.sleep(poll_interval)
         task = client.tasks.retrieve(task_id)
 
-        while task.status not in ['SUCCEEDED', 'FAILED']:
+        while task.status not in ["SUCCEEDED", "FAILED"]:
             time.sleep(poll_interval)
             task = client.tasks.retrieve(task_id)
             logger.debug(f"Scene {scene_idx}: Status - {task.status}")
 
-        if task.status == 'FAILED':
+        if task.status == "FAILED":
             raise Exception(f"Task failed: {task}")
 
         # Download the video
@@ -121,32 +127,41 @@ def _generate_single_video(
 
         # Download video from URL
         import requests
+
         response = requests.get(video_url)
         response.raise_for_status()
 
         # Save to temporary file first
-        temp_path = clip_path.with_suffix('.temp.mp4')
-        with open(temp_path, 'wb') as f:
+        temp_path = clip_path.with_suffix(".temp.mp4")
+        with open(temp_path, "wb") as f:
             f.write(response.content)
 
         # Trim video to exact audio duration if needed
         # Veo3.1 only supports 4, 6, 8s durations, so we may need to trim
         if video_duration > scene_audio.clip_duration:
-            logger.info(f"Scene {scene_idx}: Trimming video from {video_duration}s to {scene_audio.clip_duration:.2f}s")
+            logger.info(
+                f"Scene {scene_idx}: Trimming video from {video_duration}s to {scene_audio.clip_duration:.2f}s"
+            )
             import subprocess
 
             # Use ffmpeg to trim video to exact audio length
             ffmpeg_cmd = [
-                'ffmpeg', '-y',  # Overwrite output
-                '-i', str(temp_path),
-                '-t', str(scene_audio.clip_duration),  # Trim to exact duration
-                '-c', 'copy',  # Copy codec (fast, no re-encoding)
-                str(clip_path)
+                "ffmpeg",
+                "-y",  # Overwrite output
+                "-i",
+                str(temp_path),
+                "-t",
+                str(scene_audio.clip_duration),  # Trim to exact duration
+                "-c",
+                "copy",  # Copy codec (fast, no re-encoding)
+                str(clip_path),
             ]
 
             result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                logger.warning(f"Scene {scene_idx}: FFmpeg trim failed, using full video: {result.stderr}")
+                logger.warning(
+                    f"Scene {scene_idx}: FFmpeg trim failed, using full video: {result.stderr}"
+                )
                 # Fall back to using the full video
                 temp_path.rename(clip_path)
             else:
@@ -164,7 +179,7 @@ def _generate_single_video(
             clip_path=str(clip_path),
             duration=scene_audio.clip_duration,
             prompt=prompt,
-            visual_type=scene_audio.visual_type
+            visual_type=scene_audio.visual_type,
         )
 
     except Exception as e:
@@ -209,34 +224,47 @@ def concatenate_videos(
                 abs_path = video_path.resolve()
                 f.write(f"file '{abs_path}'\n")
 
-
         # Build ffmpeg command
         # If we have a separate audio file, strip audio from videos and add our audio
         if audio_path:
             # First concatenate videos without audio, then add our audio track
             cmd = [
                 "ffmpeg",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_file),  # Video input (concatenated videos)
-                "-i", str(audio_path),    # Audio input (our generated TTS audio)
-                "-map", "0:v",            # Use video from first input (includes burned captions)
-                "-map", "1:a",            # Use audio from second input (our TTS audio)
-                "-c:v", "copy",           # Copy video codec (no re-encoding, preserves burned captions)
-                "-c:a", "aac",            # Encode audio to AAC
-                "-shortest",              # Stop at shortest stream (in case audio/video mismatch)
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),  # Video input (concatenated videos)
+                "-i",
+                str(audio_path),  # Audio input (our generated TTS audio)
+                "-map",
+                "0:v",  # Use video from first input (includes burned captions)
+                "-map",
+                "1:a",  # Use audio from second input (our TTS audio)
+                "-c:v",
+                "copy",  # Copy video codec (no re-encoding, preserves burned captions)
+                "-c:a",
+                "aac",  # Encode audio to AAC
+                "-shortest",  # Stop at shortest stream (in case audio/video mismatch)
                 "-y",
                 str(output_path),
             ]
-            logger.info(f"Concatenating {len(video_paths)} videos with audio from: {audio_path}")
+            logger.info(
+                f"Concatenating {len(video_paths)} videos with audio from: {audio_path}"
+            )
         else:
             # Original behavior: concatenate with existing audio
             cmd = [
                 "ffmpeg",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_file),
-                "-c", "copy",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-c",
+                "copy",
                 "-y",
                 str(output_path),
             ]
@@ -247,7 +275,9 @@ def concatenate_videos(
 
         if result.returncode != 0:
             logger.error(f"FFmpeg concatenation failed: {result.stderr}")
-            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, result.stdout, result.stderr
+            )
 
         logger.info(f"Concatenated video saved: {output_path}")
 
@@ -263,7 +293,7 @@ def generate_videos(
     api_key: str | None = None,
     max_workers: int = MAX_WORKERS,
     poll_interval: int = POLL_INTERVAL,
-    merge: bool = False
+    merge: bool = False,
 ) -> VideoGenerationResult:
     """
     Generate video clips for all scenes in parallel.
@@ -285,7 +315,7 @@ def generate_videos(
         Exception: If video generation fails
     """
     if api_key is None:
-        api_key = os.getenv('RUNWAYML_API_SECRET')
+        api_key = os.getenv("RUNWAYML_API_SECRET")
 
     if not api_key:
         raise ValueError("RUNWAYML_API_SECRET environment variable not set")
@@ -362,19 +392,21 @@ def generate_videos(
             # Get the audio file path (should be in same dir as metadata)
             audio_path = metadata_path.parent / "audio.wav"
             if not audio_path.exists():
-                logger.warning(f"Audio file not found at {audio_path}, using video audio")
+                logger.warning(
+                    f"Audio file not found at {audio_path}, using video audio"
+                )
                 audio_path = None
 
             # Concatenate all scene videos with our generated audio
-            concatenate_videos(video_clip_paths, final_video_path, audio_path=audio_path)
+            concatenate_videos(
+                video_clip_paths, final_video_path, audio_path=audio_path
+            )
             logger.info(f"Final merged video saved: {final_video_path}")
         else:
             logger.warning("No video clips to merge")
 
     return VideoGenerationResult(
-        clips=clips,
-        output_dir=str(output_dir),
-        total_clips=len(clips)
+        clips=clips, output_dir=str(output_dir), total_clips=len(clips)
     )
 
 
@@ -393,21 +425,21 @@ def save_video_metadata(result: VideoGenerationResult, output_path: Path) -> Non
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         metadata = {
-            'output_dir': result.output_dir,
-            'total_clips': result.total_clips,
-            'clips': [
+            "output_dir": result.output_dir,
+            "total_clips": result.total_clips,
+            "clips": [
                 {
-                    'scene_index': clip.scene_index,
-                    'clip_path': clip.clip_path,
-                    'duration': clip.duration,
-                    'prompt': clip.prompt,
-                    'visual_type': clip.visual_type
+                    "scene_index": clip.scene_index,
+                    "clip_path": clip.clip_path,
+                    "duration": clip.duration,
+                    "prompt": clip.prompt,
+                    "visual_type": clip.visual_type,
                 }
                 for clip in result.clips
-            ]
+            ],
         }
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         logger.info(f"Saved video metadata to {output_path}")

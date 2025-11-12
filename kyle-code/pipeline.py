@@ -189,7 +189,9 @@ def _generate_audio_step(output_dir: Path, voice: str) -> None:
     logger.info(f"Generated audio: {result.total_duration:.2f}s with voice '{voice}'")
 
 
-def _generate_videos_step(output_dir: Path, max_workers: int, merge: bool = False) -> None:
+def _generate_videos_step(
+    output_dir: Path, max_workers: int, merge: bool = False
+) -> None:
     """Execute the generate-videos step.
 
     Note: The merge parameter is kept for API compatibility but merging now happens
@@ -200,7 +202,11 @@ def _generate_videos_step(output_dir: Path, max_workers: int, merge: bool = Fals
 
     # Generate videos (merge=False since we'll merge after captions)
     result = generate_videos(
-        metadata_path, output_dir=None, max_workers=max_workers, poll_interval=1, merge=False
+        metadata_path,
+        output_dir=None,
+        max_workers=max_workers,
+        poll_interval=1,
+        merge=False,
     )
 
     # Save video metadata
@@ -217,7 +223,12 @@ def _add_captions_step(output_dir: Path, merge: bool = True) -> None:
 
     # Add captions to all scenes
     captioned_videos = add_captions_to_all_scenes(
-        metadata_path, clips_dir=None, output_dir=None, max_words=2, font_size=24, merge=merge
+        metadata_path,
+        clips_dir=None,
+        output_dir=None,
+        max_words=2,
+        font_size=24,
+        merge=merge,
     )
 
     logger.info(f"Added captions to {len(captioned_videos)} videos")

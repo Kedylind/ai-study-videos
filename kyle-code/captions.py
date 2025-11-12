@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WordGroup:
     """A group of words with timing information."""
+
     text: str
     start_time: float
     end_time: float
@@ -21,6 +22,7 @@ class WordGroup:
 @dataclass
 class CaptionConfig:
     """Configuration for caption styling."""
+
     font_name: str = "Arial"
     font_size: int = 100
     primary_color: str = "&H00FFFFFF"  # White
@@ -33,10 +35,7 @@ class CaptionConfig:
 
 
 def distribute_words_evenly(
-    text: str,
-    start_time: float,
-    end_time: float,
-    max_words: int = 2
+    text: str, start_time: float, end_time: float, max_words: int = 2
 ) -> List[WordGroup]:
     """
     Distribute words evenly across the time duration.
@@ -60,15 +59,15 @@ def distribute_words_evenly(
 
     word_groups = []
     for i in range(0, len(words), max_words):
-        group_words = words[i:i + max_words]
+        group_words = words[i : i + max_words]
         group_start = start_time + (i * time_per_word)
         group_end = group_start + (len(group_words) * time_per_word)
 
-        word_groups.append(WordGroup(
-            text=' '.join(group_words),
-            start_time=group_start,
-            end_time=group_end
-        ))
+        word_groups.append(
+            WordGroup(
+                text=" ".join(group_words), start_time=group_start, end_time=group_end
+            )
+        )
 
     return word_groups
 
@@ -102,16 +101,16 @@ def escape_ass_text(text: str) -> str:
         Escaped text
     """
     # ASS uses backslash for escaping
-    text = text.replace('\\', '\\\\')
-    text = text.replace('{', '\\{')
-    text = text.replace('}', '\\}')
+    text = text.replace("\\", "\\\\")
+    text = text.replace("{", "\\{")
+    text = text.replace("}", "\\}")
     return text
 
 
 def generate_ass_file(
     word_groups: List[WordGroup],
     output_path: Path,
-    config: CaptionConfig = CaptionConfig()
+    config: CaptionConfig = CaptionConfig(),
 ) -> None:
     """
     Generate an ASS subtitle file from word groups.
@@ -138,7 +137,7 @@ def generate_ass_file(
         f"Style: Default,{config.font_name},{config.font_size},{config.primary_color},&H000000FF,{config.outline_color},{config.background_color},{'-1' if config.bold else '0'},0,0,0,100,100,0,0,3,{config.outline_width},0,{config.alignment},10,10,{config.margin_v},1",
         "",
         "[Events]",
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
     # Add dialogue events for each word group
@@ -151,17 +150,13 @@ def generate_ass_file(
         ass_content.append(dialogue)
 
     # Write to file
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(ass_content))
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(ass_content))
 
     logger.info(f"Generated ASS file: {output_path}")
 
 
-def burn_captions_to_video(
-    video_path: Path,
-    ass_path: Path,
-    output_path: Path
-) -> None:
+def burn_captions_to_video(video_path: Path, ass_path: Path, output_path: Path) -> None:
     """
     Burn ASS captions into video using FFmpeg.
 
@@ -177,27 +172,28 @@ def burn_captions_to_video(
 
     # FFmpeg command to burn subtitles
     cmd = [
-        'ffmpeg',
-        '-i', str(video_path),
-        '-vf', f"ass={ass_path}",
-        '-c:v', 'libx264',
-        '-crf', '23',
-        '-preset', 'medium',
-        '-c:a', 'copy',
-        '-y',  # Overwrite output file
-        str(output_path)
+        "ffmpeg",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"ass={ass_path}",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-preset",
+        "medium",
+        "-c:a",
+        "copy",
+        "-y",  # Overwrite output file
+        str(output_path),
     ]
 
     logger.info(f"Burning captions into {video_path.name}...")
     logger.debug(f"FFmpeg command: {' '.join(cmd)}")
 
     try:
-        result = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         logger.info(f"✓ Created captioned video: {output_path}")
 
     except subprocess.CalledProcessError as e:
@@ -210,7 +206,7 @@ def add_captions_to_scene(
     clips_dir: Path,
     output_dir: Path,
     max_words: int = 2,
-    config: CaptionConfig = CaptionConfig()
+    config: CaptionConfig = CaptionConfig(),
 ) -> Path:
     """
     Add captions to a single scene video.
@@ -225,10 +221,10 @@ def add_captions_to_scene(
     Returns:
         Path to captioned video file
     """
-    scene_idx = scene_data['scene_index']
-    text = scene_data['text']
+    scene_idx = scene_data["scene_index"]
+    text = scene_data["text"]
     start_time = 0.0  # Scene videos start at 0
-    end_time = scene_data['clip_duration']
+    end_time = scene_data["clip_duration"]
 
     # Verify video file exists
     video_path = clips_dir / f"scene_{scene_idx:02d}.mp4"
@@ -260,7 +256,7 @@ def add_captions_to_all_scenes(
     output_dir: Path = None,
     max_words: int = 2,
     font_size: int = 24,
-    merge: bool = True
+    merge: bool = True,
 ) -> List[Path]:
     """
     Add captions to all scene videos based on metadata.
@@ -277,7 +273,7 @@ def add_captions_to_all_scenes(
         List of paths to captioned videos
     """
     # Load metadata
-    with open(metadata_path, 'r', encoding='utf-8') as f:
+    with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
     # Set default directories
@@ -296,7 +292,7 @@ def add_captions_to_all_scenes(
 
     # Process each scene
     captioned_videos = []
-    scenes = metadata.get('scene_boundaries', [])
+    scenes = metadata.get("scene_boundaries", [])
 
     logger.info(f"Adding captions to {len(scenes)} scenes...")
     logger.info(f"Settings: max_words={max_words}, font_size={font_size}")
@@ -304,17 +300,13 @@ def add_captions_to_all_scenes(
     for scene_data in scenes:
         try:
             output_path = add_captions_to_scene(
-                scene_data,
-                clips_dir,
-                output_dir,
-                max_words,
-                config
+                scene_data, clips_dir, output_dir, max_words, config
             )
             if output_path:
                 captioned_videos.append(output_path)
 
         except Exception as e:
-            scene_idx = scene_data.get('scene_index', '?')
+            scene_idx = scene_data.get("scene_index", "?")
             logger.error(f"Scene {scene_idx}: Failed to add captions: {e}")
             raise
 
@@ -340,7 +332,9 @@ def add_captions_to_all_scenes(
             audio_path = None
 
         # Concatenate all captioned videos with our generated audio
-        logger.info(f"Merging {len(captioned_videos)} captioned videos into final video...")
+        logger.info(
+            f"Merging {len(captioned_videos)} captioned videos into final video..."
+        )
         concatenate_videos(captioned_videos, final_video_path, audio_path=audio_path)
         logger.info(f"✓ Final merged video saved: {final_video_path}")
 

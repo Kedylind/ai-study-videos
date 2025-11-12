@@ -19,7 +19,7 @@ from scenes import Scene, load_scenes
 logger = logging.getLogger(__name__)
 
 # TTS configuration
-TTS_MODEL = 'gemini-2.5-flash-preview-tts'
+TTS_MODEL = "gemini-2.5-flash-preview-tts"
 SAMPLE_RATE = 24000  # Hz
 BYTES_PER_SAMPLE = 2  # 16-bit audio
 MAX_RETRIES = 1
@@ -45,7 +45,8 @@ def _wait_for_rate_limit():
 
         # Remove timestamps older than the window
         _request_timestamps = [
-            ts for ts in _request_timestamps
+            ts
+            for ts in _request_timestamps
             if current_time - ts < TTS_RATE_LIMIT_WINDOW
         ]
 
@@ -66,7 +67,8 @@ def _wait_for_rate_limit():
 
                 # Clean up again after waiting
                 _request_timestamps = [
-                    ts for ts in _request_timestamps
+                    ts
+                    for ts in _request_timestamps
                     if current_time - ts < TTS_RATE_LIMIT_WINDOW
                 ]
 
@@ -81,19 +83,21 @@ def _wait_for_rate_limit():
 @dataclass(frozen=True)
 class SceneAudio:
     """Audio timing information for a single scene."""
+
     scene_index: int
     text: str
     visual_type: str  # "generated"
     visual_content: str  # video generation prompt
     start_time: float  # seconds
-    end_time: float    # seconds
-    duration: float    # seconds
+    end_time: float  # seconds
+    duration: float  # seconds
     clip_duration: float  # same as duration, for clarity in output
 
 
 @dataclass(frozen=True)
 class AudioResult:
     """Complete audio generation result."""
+
     full_audio_path: str  # WAV file path with continuous audio
     scene_boundaries: List[SceneAudio]  # Timing for each scene
     total_duration: float  # Total audio duration in seconds
@@ -107,11 +111,11 @@ def _ensure_punctuation(text: str) -> str:
         return text
 
     # If already ends with punctuation, return as-is
-    if text[-1] in '.!?':
+    if text[-1] in ".!?":
         return text
 
     # Add period by default
-    return text + '.'
+    return text + "."
 
 
 def _calculate_duration(audio_data: bytes) -> float:
@@ -121,10 +125,7 @@ def _calculate_duration(audio_data: bytes) -> float:
 
 
 def _generate_tts(
-    client: genai.Client,
-    text: str,
-    voice: str,
-    retry_count: int = 0
+    client: genai.Client, text: str, voice: str, retry_count: int = 0
 ) -> bytes:
     """
     Generate TTS audio for given text.
@@ -149,15 +150,15 @@ def _generate_tts(
             model=TTS_MODEL,
             contents=text,
             config=types.GenerateContentConfig(
-                response_modalities=['AUDIO'],
+                response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
                             voice_name=voice
                         )
                     )
-                )
-            )
+                ),
+            ),
         )
 
         audio_data = response.candidates[0].content.parts[0].inline_data.data
@@ -165,7 +166,9 @@ def _generate_tts(
 
     except Exception as e:
         if retry_count < MAX_RETRIES:
-            logger.warning(f"TTS failed, retrying ({retry_count + 1}/{MAX_RETRIES}): {e}")
+            logger.warning(
+                f"TTS failed, retrying ({retry_count + 1}/{MAX_RETRIES}): {e}"
+            )
             return _generate_tts(client, text, voice, retry_count + 1)
         else:
             logger.error(f"TTS failed after {MAX_RETRIES + 1} attempts: {e}")
@@ -176,7 +179,7 @@ def _save_wav(audio_data: bytes, output_path: Path) -> None:
     """Save PCM audio data as WAV file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with wave.open(str(output_path), 'wb') as wav_file:
+    with wave.open(str(output_path), "wb") as wav_file:
         wav_file.setnchannels(1)  # mono
         wav_file.setsampwidth(BYTES_PER_SAMPLE)
         wav_file.setframerate(SAMPLE_RATE)
@@ -188,8 +191,8 @@ def _save_wav(audio_data: bytes, output_path: Path) -> None:
 def generate_audio(
     scenes: List[Scene],
     output_dir: Path,
-    voice: str = 'Kore',
-    api_key: str | None = None
+    voice: str = "Kore",
+    api_key: str | None = None,
 ) -> AudioResult:
     """
     Generate audio narration for scenes with boundary timing.
@@ -214,7 +217,7 @@ def generate_audio(
         Exception: If TTS generation fails
     """
     if api_key is None:
-        api_key = os.getenv('GEMINI_API_KEY')
+        api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable not set")
@@ -232,7 +235,7 @@ def generate_audio(
 
     # Step 1: Generate full continuous audio
     logger.info("Generating full continuous audio...")
-    full_text = ' '.join(scene_texts)
+    full_text = " ".join(scene_texts)
     full_audio_data = _generate_tts(client, full_text, voice)
     full_duration = _calculate_duration(full_audio_data)
     logger.info(f"Full audio duration: {full_duration:.2f}s")
@@ -245,7 +248,7 @@ def generate_audio(
         """Generate audio for a single scene and return its duration."""
         audio_data = _generate_tts(client, text, voice)
         duration = _calculate_duration(audio_data)
-        logger.info(f"Scene {index}: {duration:.2f}s - \"{text[:50]}...\"")
+        logger.info(f'Scene {index}: {duration:.2f}s - "{text[:50]}..."')
         return index, duration
 
     # Use ThreadPoolExecutor for parallel TTS generation
@@ -286,7 +289,7 @@ def generate_audio(
             start_time=boundaries[i],
             end_time=boundaries[i + 1],
             duration=duration,
-            clip_duration=duration
+            clip_duration=duration,
         )
         scene_boundaries.append(scene_audio)
         logger.info(
@@ -295,14 +298,14 @@ def generate_audio(
         )
 
     # Step 5: Save full audio as WAV
-    audio_path = output_dir / 'audio.wav'
+    audio_path = output_dir / "audio.wav"
     _save_wav(full_audio_data, audio_path)
 
     return AudioResult(
         full_audio_path=str(audio_path),
         scene_boundaries=scene_boundaries,
         total_duration=full_duration,
-        voice=voice
+        voice=voice,
     )
 
 
@@ -322,13 +325,13 @@ def save_audio_metadata(result: AudioResult, output_path: Path) -> None:
 
         # Convert to dict with scene boundaries as list of dicts
         metadata = {
-            'full_audio_path': result.full_audio_path,
-            'total_duration': result.total_duration,
-            'voice': result.voice,
-            'scene_boundaries': [asdict(sb) for sb in result.scene_boundaries]
+            "full_audio_path": result.full_audio_path,
+            "total_duration": result.total_duration,
+            "voice": result.voice,
+            "scene_boundaries": [asdict(sb) for sb in result.scene_boundaries],
         }
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         logger.info(f"Saved audio metadata to {output_path}")
@@ -356,19 +359,17 @@ def load_audio_metadata(metadata_path: Path) -> AudioResult:
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
 
     try:
-        with open(metadata_path, 'r', encoding='utf-8') as f:
+        with open(metadata_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)
 
         # Reconstruct SceneAudio objects
-        scene_boundaries = [
-            SceneAudio(**sb) for sb in metadata['scene_boundaries']
-        ]
+        scene_boundaries = [SceneAudio(**sb) for sb in metadata["scene_boundaries"]]
 
         result = AudioResult(
-            full_audio_path=metadata['full_audio_path'],
+            full_audio_path=metadata["full_audio_path"],
             scene_boundaries=scene_boundaries,
-            total_duration=metadata['total_duration'],
-            voice=metadata['voice']
+            total_duration=metadata["total_duration"],
+            voice=metadata["voice"],
         )
 
         logger.info(f"Loaded audio metadata from {metadata_path}")
