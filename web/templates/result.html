@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Result - {{ pmid }}</title>
+  </head>
+  <body>
+    <h1>Result for {{ pmid }}</h1>
+
+    <p>Final video: <a href="{{ video_url }}">Play / Download</a></p>
+
+    <video width="480" controls>
+      <source src="{{ video_url }}" type="video/mp4">
+      Your browser does not support the video tag.
+    </video>
+
+    <p><a href="/upload/">Generate another</a></p>
+  </body>
+  </html>

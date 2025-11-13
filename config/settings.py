@@ -64,3 +64,7 @@ DATABASES = {
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+# Media files for generated outputs (videos, audio, metadata)
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Upload paper - AI Video</title>
+  </head>
+  <body>
+    <h1>Generate AI video from a paper</h1>
+
+    <form method="post" enctype="multipart/form-data">
+      {% csrf_token %}
+      <div>
+        {{ form.paper_id.label_tag }}<br>
+        {{ form.paper_id }}
+        <p>{{ form.paper_id.help_text }}</p>
+      </div>
+      <div>
+        {{ form.file.label_tag }}<br>
+        {{ form.file }}
+        <p>{{ form.file.help_text }}</p>
+      </div>
+      <button type="submit">Start generation</button>
+    </form>
+
+    <p><a href="/">Home</a></p>
+  </body>
+  </html>
