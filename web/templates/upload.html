@@ -8,7 +8,12 @@
   <body>
     <div style="margin-bottom: 20px;">
       {% if user.is_authenticated %}
-        <p>Logged in as <strong>{{ user.username }}</strong> | <a href="{% url 'logout' %}">Logout</a></p>
+        <p>Logged in as <strong>{{ user.username }}</strong> | 
+        <form method="post" action="{% url 'logout' %}" style="display: inline;">
+          {% csrf_token %}
+          <button type="submit" style="background: none; border: none; color: blue; text-decoration: underline; cursor: pointer; padding: 0; font-size: inherit;">Logout</button>
+        </form>
+        </p>
       {% endif %}
     </div>
 
