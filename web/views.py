@@ -23,39 +23,49 @@ def static_debug(request):
     """Debug endpoint to check static files configuration"""
     from django.conf import settings
     from pathlib import Path
-    import os
     
-    static_root = Path(settings.STATIC_ROOT)
-    css_file = static_root / "web" / "css" / "style.css"
-    
-    info = {
-        "STATIC_URL": settings.STATIC_URL,
-        "STATIC_ROOT": str(settings.STATIC_ROOT),
-        "STATIC_ROOT_exists": static_root.exists(),
-        "css_file_path": str(css_file),
-        "css_file_exists": css_file.exists(),
-        "STATICFILES_STORAGE": settings.STATICFILES_STORAGE,
-        "DEBUG": settings.DEBUG,
-        "whitenoise_in_middleware": "whitenoise.middleware.WhiteNoiseMiddleware" in settings.MIDDLEWARE,
-    }
-    
-    # Try to read the file if it exists
-    if css_file.exists():
-        try:
-            info["css_file_size"] = css_file.stat().st_size
-            info["css_file_readable"] = True
-        except Exception as e:
-            info["css_file_readable"] = False
-            info["css_file_error"] = str(e)
-    
-    # List files in staticfiles directory
-    if static_root.exists():
-        try:
-            info["staticfiles_contents"] = [str(p.relative_to(static_root)) for p in static_root.rglob("*") if p.is_file()][:20]
-        except Exception as e:
-            info["staticfiles_list_error"] = str(e)
-    
-    return JsonResponse(info, indent=2)
+    try:
+        static_root = Path(settings.STATIC_ROOT)
+        css_file = static_root / "web" / "css" / "style.css"
+        
+        info = {
+            "STATIC_URL": settings.STATIC_URL,
+            "STATIC_ROOT": str(settings.STATIC_ROOT),
+            "STATIC_ROOT_exists": static_root.exists(),
+            "css_file_path": str(css_file),
+            "css_file_exists": css_file.exists(),
+            "STATICFILES_STORAGE": settings.STATICFILES_STORAGE,
+            "DEBUG": settings.DEBUG,
+            "whitenoise_in_middleware": "whitenoise.middleware.WhiteNoiseMiddleware" in settings.MIDDLEWARE,
+        }
+        
+        # Try to read the file if it exists
+        if css_file.exists():
+            try:
+                info["css_file_size"] = css_file.stat().st_size
+                info["css_file_readable"] = True
+            except Exception as e:
+                info["css_file_readable"] = False
+                info["css_file_error"] = str(e)
+        
+        # List files in staticfiles directory
+        if static_root.exists():
+            try:
+                info["staticfiles_contents"] = [str(p.relative_to(static_root)) for p in static_root.rglob("*") if p.is_file()][:20]
+            except Exception as e:
+                info["staticfiles_list_error"] = str(e)
+        else:
+            info["error"] = f"STATIC_ROOT directory does not exist at {static_root}"
+            # Try to create it
+            try:
+                static_root.mkdir(parents=True, exist_ok=True)
+                info["created_directory"] = True
+            except Exception as e:
+                info["create_directory_error"] = str(e)
+        
+        return JsonResponse(info, indent=2)
+    except Exception as e:
+        return JsonResponse({"error": str(e), "type": type(e).__name__}, status=500)
 
 
 def home(request):
