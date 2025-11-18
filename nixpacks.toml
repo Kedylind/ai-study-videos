@@ -9,7 +9,8 @@ cmds = [
 
 [phases.setup]
 cmds = [
-  "python manage.py collectstatic --noinput"
+  # Don't run collectstatic here - Django may not be installed yet
+  # It will run in the start command instead
 ]
 
 [start]
