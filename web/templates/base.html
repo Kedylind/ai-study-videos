@@ -1,0 +1,42 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Hidden Hill{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'web/css/style.css' %}">
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>{% block header_title %}Hidden Hill{% endblock %}</h1>
+        <nav>
+          {% if user.is_authenticated %}
+            <span class="nav-welcome">Welcome, <strong>{{ user.username }}</strong></span>
+            <form method="post" action="{% url 'logout' %}">
+              {% csrf_token %}
+              <button type="submit">Logout</button>
+            </form>
+            <a href="/upload/">Upload Paper</a>
+          {% else %}
+            <a href="{% url 'login' %}">Login</a>
+            <a href="{% url 'register' %}">Register</a>
+          {% endif %}
+          <a href="/">Home</a>
+        </nav>
+      </header>
+
+      <main>
+        {% if messages %}
+          {% for message in messages %}
+            <div class="alert alert-info">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>
+

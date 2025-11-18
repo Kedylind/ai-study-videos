@@ -1,41 +1,44 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Login - Hidden Hill</title>
-  </head>
-  <body>
-    <h1>Login</h1>
+{% extends "base.html" %}
 
-    {% if form.errors %}
-      <p style="color: red;">Your username and password didn't match. Please try again.</p>
-    {% endif %}
+{% block title %}Login - Hidden Hill{% endblock %}
 
-    {% if next %}
-      {% if user.is_authenticated %}
+{% block header_title %}Login{% endblock %}
+
+{% block content %}
+  <h1>Login</h1>
+
+  {% if form.errors %}
+    <div class="error-message">
+      <p>Your username and password didn't match. Please try again.</p>
+    </div>
+  {% endif %}
+
+  {% if next %}
+    {% if user.is_authenticated %}
+      <div class="alert alert-info">
         <p>Your account doesn't have access to this page. To proceed, please login with an account that has access.</p>
-      {% else %}
+      </div>
+    {% else %}
+      <div class="alert alert-info">
         <p>Please login to see this page.</p>
-      {% endif %}
+      </div>
     {% endif %}
+  {% endif %}
 
-    <form method="post" action="{% url 'login' %}">
-      {% csrf_token %}
-      <div>
-        <label for="id_username">Username:</label>
-        <input type="text" name="username" id="id_username" required>
-      </div>
-      <div>
-        <label for="id_password">Password:</label>
-        <input type="password" name="password" id="id_password" required>
-      </div>
-      <button type="submit">Login</button>
-      <input type="hidden" name="next" value="{{ next }}">
-    </form>
+  <form method="post" action="{% url 'login' %}">
+    {% csrf_token %}
+    <div class="form-group">
+      <label for="id_username">Username:</label>
+      <input type="text" name="username" id="id_username" required autofocus>
+    </div>
+    <div class="form-group">
+      <label for="id_password">Password:</label>
+      <input type="password" name="password" id="id_password" required>
+    </div>
+    <button type="submit">Login</button>
+    <input type="hidden" name="next" value="{{ next }}">
+  </form>
 
-    <p><a href="{% url 'register' %}">Don't have an account? Register here</a></p>
-    <p><a href="/">Home</a></p>
-  </body>
-</html>
+  <p style="margin-top: 20px;"><a href="{% url 'register' %}">Don't have an account? Register here</a></p>
+{% endblock %}
 

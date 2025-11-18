@@ -1,20 +1,20 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Result - {{ pmid }}</title>
-  </head>
-  <body>
-    <h1>Result for {{ pmid }}</h1>
+{% extends "base.html" %}
 
-    <p>Final video: <a href="{{ video_url }}">Play / Download</a></p>
+{% block title %}Result - {{ pmid }} - Hidden Hill{% endblock %}
 
-    <video width="480" controls>
-      <source src="{{ video_url }}" type="video/mp4">
-      Your browser does not support the video tag.
-    </video>
+{% block header_title %}Video Result{% endblock %}
 
-    <p><a href="/upload/">Generate another</a></p>
-  </body>
-  </html>
+{% block content %}
+  <p>Your AI-generated video for paper <strong>{{ pmid }}</strong> is ready!</p>
+  
+  <p><a href="{{ video_url }}" class="btn-secondary">Download Video</a></p>
+
+  <video controls>
+    <source src="{{ video_url }}" type="video/mp4">
+    Your browser does not support the video tag.
+  </video>
+
+  <div class="button-group">
+    <a href="/upload/" class="btn-primary">Generate another video</a>
+  </div>
+{% endblock %}

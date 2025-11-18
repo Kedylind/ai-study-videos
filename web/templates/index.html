@@ -1,25 +1,20 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Hidden Hill staging</title>
-  </head>
-  <body>
-    <h1>Hidden Hill staging is live</h1>
-    
-    <div style="margin-bottom: 20px;">
-      {% if user.is_authenticated %}
-        <p>Welcome, <strong>{{ user.username }}</strong>!</p>
-        <form method="post" action="{% url 'logout' %}" style="display: inline;">
-          {% csrf_token %}
-          <button type="submit" style="background: none; border: none; color: blue; text-decoration: underline; cursor: pointer; padding: 0; font-size: inherit;">Logout</button>
-        </form>
-        <p><a href="/upload/">Generate an AI video from a paper</a></p>
-      {% else %}
-        <p><a href="{% url 'login' %}">Login</a> | <a href="{% url 'register' %}">Register</a></p>
-        <p><em>Please login to generate videos from papers.</em></p>
-      {% endif %}
+{% extends "base.html" %}
+
+{% block title %}Hidden Hill - Home{% endblock %}
+
+{% block header_title %}Hidden Hill{% endblock %}
+
+{% block content %}
+  {% if user.is_authenticated %}
+    <div class="welcome-message">
+      <p>Ready to generate AI videos from research papers. Upload a paper to get started!</p>
     </div>
-  </body>
-</html>
+    <div class="button-group button-group-center">
+      <a href="/upload/" class="btn-primary">Generate an AI video from a paper</a>
+    </div>
+  {% else %}
+    <div class="welcome-message">
+      <p>Transform research papers into engaging AI-generated videos. Please login or register to get started.</p>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -1,25 +1,30 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Pipeline status - {{ pmid }}</title>
-  </head>
-  <body>
-    <h1>Pipeline status for {{ pmid }}</h1>
+{% extends "base.html" %}
 
-    {% if final_video_exists %}
-      <p>Final video ready: <a href="{{ final_video_url }}">Download/Play</a></p>
-      <p><a href="/result/{{ pmid }}">Open result page</a></p>
-    {% else %}
+{% block title %}Pipeline Status - {{ pmid }} - Hidden Hill{% endblock %}
+
+{% block header_title %}Pipeline Status{% endblock %}
+
+{% block content %}
+  <p>Tracking the generation process for paper <strong>{{ pmid }}</strong>.</p>
+
+  {% if final_video_exists %}
+    <div class="alert alert-info">
+      <p><strong>Final video ready!</strong></p>
+      <div class="button-group">
+        <a href="{{ final_video_url }}" class="btn-primary">Download/Play</a>
+        <a href="/result/{{ pmid }}" class="btn-secondary">Open result page</a>
+      </div>
+    </div>
+  {% else %}
+    <div class="alert alert-info">
       <p>Pipeline is running or queued. Refresh this page to update status.</p>
-    {% endif %}
+    </div>
+  {% endif %}
 
-    <h2>Pipeline log (tail)</h2>
-    <pre style="white-space:pre-wrap; background:#f7f7f7; padding:8px;">{{ log_tail }}</pre>
+  <h2>Pipeline log (tail)</h2>
+  <pre>{{ log_tail }}</pre>
 
-    <p>
-      <a href="/upload/">Start another</a>
-    </p>
-  </body>
-  </html>
+  <div class="button-group">
+    <a href="/upload/" class="btn-primary">Generate another video</a>
+  </div>
+{% endblock %}
