@@ -2,6 +2,13 @@ from pathlib import Path
 import os
 import dj_database_url
 
+# Load environment variables from .env file for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, skip (not needed on Railway)
+
 def _csv(name, default=""):
     return [v.strip() for v in os.getenv(name, default).split(",") if v.strip()]
 
@@ -68,3 +75,27 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 # Media files for generated outputs (videos, audio, metadata)
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Authentication settings
+LOGIN_URL = "/login/"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/"
+
+# Password validation
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {
+            "min_length": 8,
+        },
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
+    },
+]

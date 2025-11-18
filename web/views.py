@@ -5,8 +5,11 @@ import subprocess
 from pathlib import Path
 
 from django.conf import settings
+from django.contrib.auth import login
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.forms import UserCreationForm
 from django.http import JsonResponse, HttpResponse, HttpResponseRedirect
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.urls import reverse
 
 from .forms import PaperUploadForm
@@ -49,6 +52,7 @@ def _start_pipeline_async(pmid: str, output_dir: Path):
     thread.start()
 
 
+@login_required
 def upload_paper(request):
     """Simple UI to accept a PubMed ID/PMCID and start the pipeline."""
     if request.method == "POST":
@@ -145,3 +149,16 @@ def pipeline_result(request, pmid: str):
         return render(request, "result.html", {"pmid": pmid, "video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4"})
     else:
         return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
+
+
+def register(request):
+    """User registration view."""
+    if request.method == "POST":
+        form = UserCreationForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            return redirect("home")
+    else:
+        form = UserCreationForm()
+    return render(request, "registration/register.html", {"form": form})

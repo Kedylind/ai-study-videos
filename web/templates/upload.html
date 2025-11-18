@@ -6,6 +6,12 @@
     <title>Upload paper - AI Video</title>
   </head>
   <body>
+    <div style="margin-bottom: 20px;">
+      {% if user.is_authenticated %}
+        <p>Logged in as <strong>{{ user.username }}</strong> | <a href="{% url 'logout' %}">Logout</a></p>
+      {% endif %}
+    </div>
+
     <h1>Generate AI video from a paper</h1>
 
     <form method="post" enctype="multipart/form-data">
