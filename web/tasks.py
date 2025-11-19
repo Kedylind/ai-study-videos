@@ -73,3 +73,30 @@ def run_pipeline_task(
         except self.MaxRetriesExceededError:
             logger.exception("Max retries exceeded for pipeline task %s", pmid)
             raise
+
+
+@shared_task(bind=True)
+def write_marker_task(self, marker_path: str = "/tmp/celery_test_marker.txt", content: str = "OK") -> dict:
+    """Write a small marker file (used for smoke tests).
+
+    This task is intentionally simple and idempotent (overwrites the file).
+    It returns a dict with the marker path and size written.
+    """
+    try:
+        p = Path(marker_path)
+        # Ensure parent exists
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        size = p.stat().st_size
+        logger.info("Wrote marker file %s (size=%d)", p, size)
+        return {"marker": str(p), "size": size}
+    except Exception as e:
+        logger.exception("Failed to write marker file %s: %s", marker_path, e)
+        # Retry a couple of times for transient filesystem issues
+        try:
+            raise self.retry(exc=e, countdown=5, max_retries=2)
+        except self.MaxRetriesExceededError:
+            logger.exception("Max retries exceeded for write_marker_task %s", marker_path)
+            raise
