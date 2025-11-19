@@ -134,7 +134,26 @@ def upload_paper(request):
 
             # Start pipeline asynchronously and redirect to status page
             output_dir = Path(settings.MEDIA_ROOT) / pmid
-            _start_pipeline_async(pmid, output_dir)
+
+            # Prefer enqueuing a Celery task when a broker is configured.
+            celery_broker = os.getenv("CELERY_BROKER_URL") or getattr(settings, "CELERY_BROKER_URL", None)
+            if celery_broker:
+                try:
+                    # Import task lazily to avoid hard dependency at import time
+                    from .tasks import run_pipeline_task
+
+                    run_pipeline_task.delay(pmid, str(output_dir))
+                except Exception as e:
+                    # If enqueue fails, log and fall back to subprocess runner to preserve behavior
+                    import logging
+
+                    logging.getLogger(__name__).exception(
+                        "Failed to enqueue Celery task; falling back to subprocess: %s",
+                        e,
+                    )
+                    _start_pipeline_async(pmid, output_dir)
+            else:
+                _start_pipeline_async(pmid, output_dir)
 
             return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
     else:
