@@ -9,7 +9,7 @@ from kyle_code import orchestrate_pipeline, PipelineError
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3, soft_time_limit=60 * 60)
+@shared_task(bind=True, max_retries=3, soft_time_limit=60 * 60, time_limit=60 * 60 + 30, acks_late=True)
 def run_pipeline_task(
     self,
     pmid: str,
@@ -36,11 +36,20 @@ def run_pipeline_task(
         logger.error(msg)
         raise RuntimeError(msg)
 
-    try:
-        logger.info("Starting pipeline task for %s -> %s", pmid, out_path)
+    # Prepare a file handler so the web UI (which reads output_dir/pipeline.log)
+    # can show task progress. We attach a temporary FileHandler for the
+    # duration of the task and remove it afterwards to avoid leaking handlers.
+    out_path.mkdir(parents=True, exist_ok=True)
+    log_path = out_path / "pipeline.log"
 
-        # Ensure output directory exists and is writable
-        out_path.mkdir(parents=True, exist_ok=True)
+    file_handler = None
+    try:
+        file_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        file_handler.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+
+        logger.info("Starting pipeline task for %s -> %s", pmid, out_path)
 
         # Call into the orchestration function
         orchestrate_pipeline(
@@ -73,9 +82,18 @@ def run_pipeline_task(
         except self.MaxRetriesExceededError:
             logger.exception("Max retries exceeded for pipeline task %s", pmid)
             raise
+    finally:
+        # Ensure file handler is removed and flushed
+        if file_handler is not None:
+            try:
+                file_handler.flush()
+                logger.removeHandler(file_handler)
+                file_handler.close()
+            except Exception:
+                logger.exception("Error closing pipeline file handler for %s", pmid)
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, max_retries=2)
 def write_marker_task(self, marker_path: str = "/tmp/celery_test_marker.txt", content: str = "OK") -> dict:
     """Write a small marker file (used for smoke tests).
 
@@ -96,7 +114,7 @@ def write_marker_task(self, marker_path: str = "/tmp/celery_test_marker.txt", co
         logger.exception("Failed to write marker file %s: %s", marker_path, e)
         # Retry a couple of times for transient filesystem issues
         try:
-            raise self.retry(exc=e, countdown=5, max_retries=2)
+            raise self.retry(exc=e, countdown=5)
         except self.MaxRetriesExceededError:
             logger.exception("Max retries exceeded for write_marker_task %s", marker_path)
             raise

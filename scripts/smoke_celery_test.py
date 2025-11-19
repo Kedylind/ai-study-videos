@@ -16,6 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Prevent django-celery-results from being used when running this lightweight
+# smoke test synchronously (it imports Django models at import time). Force a
+# non-Django result backend for the duration of this script.
+import os
+os.environ.setdefault("CELERY_RESULT_BACKEND", "rpc://")
+
 
 def main() -> int:
     print("Celery smoke test starting...")

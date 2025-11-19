@@ -29,6 +29,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "web",
+    # Celery result backend (stores task results in Django DB)
+    "django_celery_results",
 ]
 
 MIDDLEWARE = [
@@ -100,3 +102,11 @@ AUTH_PASSWORD_VALIDATORS = [
         "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
+
+# Celery configuration
+# Broker URL can be provided via environment variable `CELERY_BROKER_URL`.
+# For local development, default to a local Redis instance.
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+
+# Use Django database to store Celery task results (requires django-celery-results)
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "django-db")
