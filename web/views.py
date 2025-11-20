@@ -2,15 +2,19 @@ import os
 import sys
 import threading
 import subprocess
+import json
 from pathlib import Path
+from typing import Dict, Optional
 
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
-from django.http import JsonResponse, HttpResponse, HttpResponseRedirect
+from django.http import JsonResponse, HttpResponse, HttpResponseRedirect, HttpResponseBadRequest
 from django.shortcuts import render, redirect
 from django.urls import reverse
+from django.views.decorators.http import require_http_methods
+from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
 
@@ -71,6 +75,69 @@ def static_debug(request):
 def home(request):
     # Render a small landing page with a link to the upload UI
     return render(request, "index.html")
+
+
+def _get_pipeline_progress(output_dir: Path) -> Dict:
+    """Check pipeline progress by examining output directory for step completion markers.
+    
+    Returns a dict with:
+    - current_step: name of current step or None if complete
+    - completed_steps: list of completed step names
+    - progress_percent: 0-100
+    - status: 'pending', 'running', 'completed', 'failed'
+    """
+    steps = [
+        ("fetch-paper", lambda d: (d / "paper.json").exists()),
+        ("generate-script", lambda d: (d / "script.json").exists()),
+        ("generate-audio", lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
+        ("generate-videos", lambda d: (d / "clips" / ".videos_complete").exists()),
+        ("add-captions", lambda d: (d / "final_video.mp4").exists()),
+    ]
+    
+    completed_steps = []
+    current_step = None
+    
+    for step_name, check_func in steps:
+        if check_func(output_dir):
+            completed_steps.append(step_name)
+        else:
+            if current_step is None:
+                current_step = step_name
+            break
+    
+    total_steps = len(steps)
+    completed_count = len(completed_steps)
+    progress_percent = int((completed_count / total_steps) * 100)
+    
+    # Check if pipeline failed (has log but no final video and not currently running)
+    log_path = output_dir / "pipeline.log"
+    final_video = output_dir / "final_video.mp4"
+    
+    if final_video.exists():
+        status = "completed"
+    elif log_path.exists() and current_step is None and completed_count < total_steps:
+        # Check if process is still running by looking for recent log activity
+        try:
+            import time
+            mtime = log_path.stat().st_mtime
+            if time.time() - mtime < 60:  # Log updated in last minute
+                status = "running"
+            else:
+                status = "failed"
+        except:
+            status = "running"
+    elif current_step:
+        status = "running"
+    else:
+        status = "pending"
+    
+    return {
+        "current_step": current_step,
+        "completed_steps": completed_steps,
+        "progress_percent": progress_percent,
+        "status": status,
+        "total_steps": total_steps,
+    }
 
 
 def _start_pipeline_async(pmid: str, output_dir: Path):
@@ -150,7 +217,9 @@ def pipeline_status(request, pmid: str):
     log_path = output_dir / "pipeline.log"
 
     if request.GET.get("_json"):
-        # JSON status endpoint
+        # JSON status endpoint - use the new progress tracking
+        progress = _get_pipeline_progress(output_dir)
+        
         status = {
             "pmid": pmid,
             "exists": output_dir.exists(),
@@ -158,6 +227,10 @@ def pipeline_status(request, pmid: str):
             "final_video_url": (
                 f"{settings.MEDIA_URL}{pmid}/final_video.mp4" if final_video.exists() else None
             ),
+            "status": progress["status"],
+            "current_step": progress["current_step"],
+            "completed_steps": progress["completed_steps"],
+            "progress_percent": progress["progress_percent"],
         }
         # include tail of log if present
         if log_path.exists():
@@ -172,6 +245,7 @@ def pipeline_status(request, pmid: str):
         return JsonResponse(status)
 
     # Render an HTML status page
+    progress = _get_pipeline_progress(output_dir)
     log_tail = ""
     if log_path.exists():
         try:
@@ -186,6 +260,7 @@ def pipeline_status(request, pmid: str):
         "final_video_exists": final_video.exists(),
         "final_video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4",
         "log_tail": log_tail,
+        "progress": progress,
     }
 
     return render(request, "status.html", context)
@@ -211,3 +286,186 @@ def register(request):
     else:
         form = UserCreationForm()
     return render(request, "registration/register.html", {"form": form})
+
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
+@require_http_methods(["POST"])
+@csrf_exempt  # For API usage, you may want to use proper API authentication instead
+def api_start_generation(request):
+    """API endpoint to start video generation from a PubMed ID.
+    
+    POST /api/generate/
+    Body (JSON):
+    {
+        "paper_id": "PMC10979640"  # or PMID like "33963468"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "paper_id": "PMC10979640",
+        "status_url": "/api/status/PMC10979640/",
+        "message": "Pipeline started"
+    }
+    """
+    try:
+        if request.content_type == 'application/json':
+            import json
+            data = json.loads(request.body)
+            paper_id = data.get("paper_id", "").strip()
+        else:
+            paper_id = request.POST.get("paper_id", "").strip()
+        
+        if not paper_id:
+            return JsonResponse(
+                {"success": False, "error": "paper_id is required"},
+                status=400
+            )
+        
+        # Validate API keys are set
+        if not os.getenv("GEMINI_API_KEY"):
+            return JsonResponse(
+                {"success": False, "error": "GEMINI_API_KEY environment variable not set"},
+                status=500
+            )
+        
+        if not os.getenv("RUNWAYML_API_SECRET"):
+            return JsonResponse(
+                {"success": False, "error": "RUNWAYML_API_SECRET environment variable not set"},
+                status=500
+            )
+        
+        # Start pipeline
+        output_dir = Path(settings.MEDIA_ROOT) / paper_id
+        
+        # Check if already running or completed
+        progress = _get_pipeline_progress(output_dir)
+        if progress["status"] == "running":
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": "Pipeline already running for this paper_id",
+                    "status_url": f"/api/status/{paper_id}/"
+                },
+                status=409  # Conflict
+            )
+        
+        # Start the pipeline
+        _start_pipeline_async(paper_id, output_dir)
+        
+        return JsonResponse({
+            "success": True,
+            "paper_id": paper_id,
+            "status_url": f"/api/status/{paper_id}/",
+            "result_url": f"/api/result/{paper_id}/",
+            "message": "Pipeline started successfully"
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse(
+            {"success": False, "error": "Invalid JSON in request body"},
+            status=400
+        )
+    except Exception as e:
+        return JsonResponse(
+            {"success": False, "error": str(e)},
+            status=500
+        )
+
+
+@require_http_methods(["GET"])
+def api_status(request, paper_id: str):
+    """API endpoint to check pipeline status.
+    
+    GET /api/status/<paper_id>/
+    
+    Returns:
+    {
+        "paper_id": "PMC10979640",
+        "status": "running",  # pending, running, completed, failed
+        "current_step": "generate-videos",
+        "completed_steps": ["fetch-paper", "generate-script", "generate-audio"],
+        "progress_percent": 60,
+        "final_video_url": "/media/PMC10979640/final_video.mp4" or null,
+        "log_tail": "last 8KB of log file"
+    }
+    """
+    output_dir = Path(settings.MEDIA_ROOT) / paper_id
+    progress = _get_pipeline_progress(output_dir)
+    
+    final_video = output_dir / "final_video.mp4"
+    final_video_url = None
+    if final_video.exists():
+        final_video_url = f"{settings.MEDIA_URL}{paper_id}/final_video.mp4"
+    
+    # Get log tail
+    log_path = output_dir / "pipeline.log"
+    log_tail = ""
+    if log_path.exists():
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(max(0, f.tell() - 8192))
+                log_tail = f.read().decode(errors="replace")
+        except Exception:
+            log_tail = "(could not read log)"
+    
+    response = {
+        "paper_id": paper_id,
+        "status": progress["status"],
+        "current_step": progress["current_step"],
+        "completed_steps": progress["completed_steps"],
+        "progress_percent": progress["progress_percent"],
+        "final_video_url": final_video_url,
+        "log_tail": log_tail,
+    }
+    
+    return JsonResponse(response)
+
+
+@require_http_methods(["GET"])
+def api_result(request, paper_id: str):
+    """API endpoint to get the final video result.
+    
+    GET /api/result/<paper_id>/
+    
+    Returns:
+    {
+        "paper_id": "PMC10979640",
+        "success": true,
+        "video_url": "/media/PMC10979640/final_video.mp4",
+        "status": "completed"
+    }
+    or
+    {
+        "paper_id": "PMC10979640",
+        "success": false,
+        "error": "Video not ready yet",
+        "status": "running",
+        "status_url": "/api/status/PMC10979640/"
+    }
+    """
+    output_dir = Path(settings.MEDIA_ROOT) / paper_id
+    final_video = output_dir / "final_video.mp4"
+    
+    progress = _get_pipeline_progress(output_dir)
+    
+    if final_video.exists():
+        return JsonResponse({
+            "paper_id": paper_id,
+            "success": True,
+            "video_url": f"{settings.MEDIA_URL}{paper_id}/final_video.mp4",
+            "status": "completed",
+            "progress_percent": 100,
+        })
+    else:
+        return JsonResponse({
+            "paper_id": paper_id,
+            "success": False,
+            "error": "Video not ready yet",
+            "status": progress["status"],
+            "progress_percent": progress["progress_percent"],
+            "status_url": f"/api/status/{paper_id}/",
+        }, status=202)  # Accepted but not ready

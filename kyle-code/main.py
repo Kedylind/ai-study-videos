@@ -1,10 +1,21 @@
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
 import click
 from runwayml import RunwayML
+
+# Load environment variables from .env file (if it exists)
+try:
+    from dotenv import load_dotenv
+    # Load .env from project root (parent directory)
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # python-dotenv not installed, skip
 
 from pubmed import fetch_paper, PMCNotFoundError
 from scenes import generate_scenes, save_scenes, load_scenes

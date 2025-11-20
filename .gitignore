@@ -37,3 +37,11 @@ archive/
 
 # Django static files (collected by collectstatic)
 staticfiles/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Kyle-code temporary test files
+kyle-code/tmp/
