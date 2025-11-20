@@ -5,7 +5,7 @@
 {% block header_title %}Generate AI Video from Paper{% endblock %}
 
 {% block content %}
-  <p>Upload a research paper to generate an AI video. You can provide either a PubMed ID or upload a PDF file.</p>
+  <p>Upload a research paper to generate an AI video. Provide either a PubMed ID or upload a PDF file.</p>
 
   <form method="post" enctype="multipart/form-data">
     {% csrf_token %}
@@ -13,16 +13,16 @@
       <label for="{{ form.paper_id.id_for_label }}">{{ form.paper_id.label }}</label>
       {{ form.paper_id }}
       {% if form.paper_id.help_text %}
-        <p class="help-text">{{ form.paper_id.help_text }}</p>
+        <p class="help-text">{{ form.paper_id.help_text|safe }}</p>
       {% endif %}
     </div>
     <div class="form-group">
       <label for="{{ form.file.id_for_label }}">{{ form.file.label }}</label>
       {{ form.file }}
       {% if form.file.help_text %}
-        <p class="help-text">{{ form.file.help_text }}</p>
+        <p class="help-text">{{ form.file.help_text|safe }}</p>
       {% endif %}
     </div>
-    <button type="submit">Start generation</button>
+    <button type="submit" class="btn-primary">Start Generation</button>
   </form>
 {% endblock %}
