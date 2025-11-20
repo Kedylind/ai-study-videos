@@ -15,6 +15,13 @@
       {% if form.paper_id.help_text %}
         <p class="help-text">{{ form.paper_id.help_text }}</p>
       {% endif %}
+      {% if form.paper_id.errors %}
+        <ul class="error-list">
+          {% for error in form.paper_id.errors %}
+            <li>{{ error }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
     </div>
     <div class="form-group">
       <label for="{{ form.file.id_for_label }}">{{ form.file.label }}</label>
@@ -22,7 +29,37 @@
       {% if form.file.help_text %}
         <p class="help-text">{{ form.file.help_text }}</p>
       {% endif %}
+      {% if form.file.errors %}
+        <ul class="error-list">
+          {% for error in form.file.errors %}
+            <li>{{ error }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
     </div>
+    <div class="form-group">
+      <label for="{{ form.access_code.id_for_label }}">{{ form.access_code.label }}</label>
+      {{ form.access_code }}
+      {% if form.access_code.help_text %}
+        <p class="help-text">{{ form.access_code.help_text }}</p>
+      {% endif %}
+      {% if form.access_code.errors %}
+        <ul class="error-list">
+          {% for error in form.access_code.errors %}
+            <li>{{ error }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+    {% if form.non_field_errors %}
+      <div class="form-errors">
+        <ul class="error-list">
+          {% for error in form.non_field_errors %}
+            <li>{{ error }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
     <button type="submit">Start generation</button>
   </form>
 {% endblock %}

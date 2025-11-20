@@ -1,7 +1,4 @@
 import os
-import sys
-import threading
-import subprocess
 import json
 from pathlib import Path
 from typing import Dict, Optional
@@ -17,6 +14,59 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
+from .tasks import generate_video_task, get_task_status
+
+
+def _get_user_friendly_error(error_type: str, error_detail: str = "") -> str:
+    """Convert error type to user-friendly error message.
+    
+    Args:
+        error_type: Error type from task classification
+        error_detail: Detailed error message
+        
+    Returns:
+        User-friendly error message
+    """
+    error_messages = {
+        "paper_not_found": "Paper not found in PubMed Central. Please check the PubMed ID or PMC ID and ensure the paper is open-access.",
+        "api_key_error": "API key invalid or expired. Please contact the administrator.",
+        "timeout": "Pipeline timeout. The video generation took too long. Please try again or contact support.",
+        "rate_limit": "API rate limit exceeded. Please wait a few minutes and try again.",
+        "pipeline_error": f"Video generation failed: {error_detail[:200] if error_detail else 'Unknown error'}",
+        "task_error": "Task execution error. Please try again or contact support.",
+        "unknown_error": f"An error occurred during video generation: {error_detail[:200] if error_detail else 'Unknown error'}",
+    }
+    
+    return error_messages.get(error_type, error_messages["unknown_error"])
+
+
+def _validate_access_code(access_code: str) -> bool:
+    """Validate the provided access code against the configured code.
+    
+    Args:
+        access_code: The access code to validate
+        
+    Returns:
+        True if the access code is valid, False otherwise
+        
+    Raises:
+        ValueError: If VIDEO_ACCESS_CODE is not configured (server misconfiguration)
+    """
+    expected_code = os.getenv("VIDEO_ACCESS_CODE")
+    
+    # Require access code to be configured for security
+    if not expected_code:
+        raise ValueError(
+            "VIDEO_ACCESS_CODE is not configured. "
+            "Please set VIDEO_ACCESS_CODE environment variable for security."
+        )
+    
+    # Require access code to be provided
+    if not access_code or not access_code.strip():
+        return False
+    
+    # Compare codes (case-sensitive)
+    return access_code.strip() == expected_code.strip()
 
 
 def health(request):
@@ -80,11 +130,15 @@ def home(request):
 def _get_pipeline_progress(output_dir: Path) -> Dict:
     """Check pipeline progress by examining output directory for step completion markers.
     
+    Also checks Celery task status for error information.
+    
     Returns a dict with:
     - current_step: name of current step or None if complete
     - completed_steps: list of completed step names
     - progress_percent: 0-100
     - status: 'pending', 'running', 'completed', 'failed'
+    - error: error message if failed (from Celery task)
+    - error_type: user-friendly error type
     """
     steps = [
         ("fetch-paper", lambda d: (d / "paper.json").exists()),
@@ -109,12 +163,26 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     completed_count = len(completed_steps)
     progress_percent = int((completed_count / total_steps) * 100)
     
+    # Check Celery task status for error information
+    task_result = None
+    if output_dir.exists():
+        pmid = output_dir.name
+        task_result = get_task_status(pmid)
+    
     # Check if pipeline failed (has log but no final video and not currently running)
     log_path = output_dir / "pipeline.log"
     final_video = output_dir / "final_video.mp4"
     
+    error = None
+    error_type = None
+    
     if final_video.exists():
         status = "completed"
+    elif task_result and task_result.get("status") == "failed":
+        # Task explicitly failed
+        status = "failed"
+        error = task_result.get("error")
+        error_type = task_result.get("error_type")
     elif log_path.exists() and current_step is None and completed_count < total_steps:
         # Check if process is still running by looking for recent log activity
         try:
@@ -124,6 +192,10 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
                 status = "running"
             else:
                 status = "failed"
+                # Try to get error from task result
+                if task_result:
+                    error = task_result.get("error")
+                    error_type = task_result.get("error_type")
         except:
             status = "running"
     elif current_step:
@@ -131,41 +203,34 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     else:
         status = "pending"
     
-    return {
+    result = {
         "current_step": current_step,
         "completed_steps": completed_steps,
         "progress_percent": progress_percent,
         "status": status,
         "total_steps": total_steps,
     }
+    
+    # Add error information if available
+    if error:
+        result["error"] = error
+    if error_type:
+        result["error_type"] = error_type
+    
+    return result
 
 
 def _start_pipeline_async(pmid: str, output_dir: Path):
-    """Start the kyle-code pipeline in a background thread using subprocess.
+    """Start the kyle-code pipeline using Celery task queue.
 
-    This avoids importing the pipeline directly into Django and keeps
-    the execution isolated. Output (logs) are written to output_dir/pipeline.log.
+    This uses Celery to run the pipeline asynchronously, which allows
+    tasks to survive server restarts and provides better error handling.
     """
-
-    def runner():
-        output_dir.mkdir(parents=True, exist_ok=True)
-        log_path = output_dir / "pipeline.log"
-
-        # Use the same Python interpreter
-        python_exe = sys.executable
-        script_path = Path(settings.BASE_DIR) / "kyle-code" / "main.py"
-
-        cmd = [python_exe, str(script_path), "generate-video", pmid, str(output_dir)]
-
-        env = os.environ.copy()
-
-        # Ensure output is written to a log file
-        with open(log_path, "ab") as out:
-            process = subprocess.Popen(cmd, stdout=out, stderr=out, env=env)
-            process.wait()
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
+    # Start Celery task
+    task = generate_video_task.delay(pmid, str(output_dir))
+    
+    # Task is now queued and will be processed by a Celery worker
+    # Status can be checked via the task ID or by reading the task_result.json file
 
 
 @login_required
@@ -174,6 +239,17 @@ def upload_paper(request):
     if request.method == "POST":
         form = PaperUploadForm(request.POST, request.FILES)
         if form.is_valid():
+            # Validate access code
+            access_code = form.cleaned_data.get("access_code", "")
+            try:
+                if not _validate_access_code(access_code):
+                    form.add_error("access_code", "Invalid access code. Please check and try again.")
+                    return render(request, "upload.html", {"form": form})
+            except ValueError as e:
+                # Server misconfiguration - access code not set
+                form.add_error(None, f"Server configuration error: {e}")
+                return render(request, "upload.html", {"form": form})
+            
             pmid = form.cleaned_data.get("paper_id")
             # If a file is uploaded we save it and use a folder named by filename
             uploaded = form.cleaned_data.get("file")
@@ -232,6 +308,15 @@ def pipeline_status(request, pmid: str):
             "completed_steps": progress["completed_steps"],
             "progress_percent": progress["progress_percent"],
         }
+        
+        # Add error information if available
+        if "error" in progress:
+            status["error"] = progress["error"]
+        if "error_type" in progress:
+            status["error_type"] = progress["error_type"]
+            # Add user-friendly error message
+            status["error_message"] = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
+        
         # include tail of log if present
         if log_path.exists():
             try:
@@ -254,6 +339,11 @@ def pipeline_status(request, pmid: str):
                 log_tail = f.read().decode(errors="replace")
         except Exception:
             log_tail = "(could not read log)"
+    
+    # Get user-friendly error message
+    error_message = None
+    if progress.get("error_type"):
+        error_message = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
 
     context = {
         "pmid": pmid,
@@ -261,6 +351,7 @@ def pipeline_status(request, pmid: str):
         "final_video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4",
         "log_tail": log_tail,
         "progress": progress,
+        "error_message": error_message,
     }
 
     return render(request, "status.html", context)
@@ -300,7 +391,8 @@ def api_start_generation(request):
     POST /api/generate/
     Body (JSON):
     {
-        "paper_id": "PMC10979640"  # or PMID like "33963468"
+        "paper_id": "PMC10979640",  # or PMID like "33963468"
+        "access_code": "your-access-code"  # Required access code
     }
     
     Returns:
@@ -316,13 +408,29 @@ def api_start_generation(request):
             import json
             data = json.loads(request.body)
             paper_id = data.get("paper_id", "").strip()
+            access_code = data.get("access_code", "").strip()
         else:
             paper_id = request.POST.get("paper_id", "").strip()
+            access_code = request.POST.get("access_code", "").strip()
         
         if not paper_id:
             return JsonResponse(
                 {"success": False, "error": "paper_id is required"},
                 status=400
+            )
+        
+        # Validate access code
+        try:
+            if not _validate_access_code(access_code):
+                return JsonResponse(
+                    {"success": False, "error": "Invalid or missing access_code"},
+                    status=403  # Forbidden
+                )
+        except ValueError as e:
+            # Server misconfiguration - access code not set
+            return JsonResponse(
+                {"success": False, "error": f"Server configuration error: {str(e)}"},
+                status=500  # Internal Server Error
             )
         
         # Validate API keys are set
@@ -351,6 +459,18 @@ def api_start_generation(request):
                     "status_url": f"/api/status/{paper_id}/"
                 },
                 status=409  # Conflict
+            )
+        
+        # Don't restart if already completed
+        if progress["status"] == "completed":
+            return JsonResponse(
+                {
+                    "success": True,
+                    "paper_id": paper_id,
+                    "status_url": f"/api/status/{paper_id}/",
+                    "result_url": f"/api/result/{paper_id}/",
+                    "message": "Video already generated"
+                }
             )
         
         # Start the pipeline

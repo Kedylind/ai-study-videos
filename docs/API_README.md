@@ -22,14 +22,17 @@ Starts the video generation pipeline for a given PubMed ID or PMCID.
 **Request Body (JSON):**
 ```json
 {
-  "paper_id": "PMC10979640"
+  "paper_id": "PMC10979640",
+  "access_code": "your-access-code-here"
 }
 ```
 
 Or as form data:
 ```
-paper_id=PMC10979640
+paper_id=PMC10979640&access_code=your-access-code-here
 ```
+
+**Note:** The `access_code` is required to prevent unauthorized usage. Contact the administrator to obtain the access code.
 
 **Response (200 OK):**
 ```json
@@ -44,6 +47,7 @@ paper_id=PMC10979640
 
 **Error Responses:**
 - `400 Bad Request`: Missing or invalid `paper_id`
+- `403 Forbidden`: Invalid or missing `access_code`
 - `409 Conflict`: Pipeline already running for this paper_id
 - `500 Internal Server Error`: Missing API keys or other server errors
 
@@ -144,7 +148,10 @@ BASE_URL = "http://localhost:8000"
 # 1. Start generation
 response = requests.post(
     f"{BASE_URL}/api/generate/",
-    json={"paper_id": "PMC10979640"}
+    json={
+        "paper_id": "PMC10979640",
+        "access_code": "your-access-code-here"  # Required!
+    }
 )
 data = response.json()
 print(f"Started: {data['message']}")

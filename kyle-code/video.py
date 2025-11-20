@@ -17,7 +17,7 @@ from audio import load_audio_metadata, SceneAudio
 logger = logging.getLogger(__name__)
 
 # Video generation configuration
-VIDEO_MODEL = "veo3.1"
+VIDEO_MODEL = "veo3.1_fast"  # Fast version for quicker generation
 POLL_INTERVAL = 1  # seconds between status checks
 MAX_WORKERS = 5  # Runway has better rate limits than Google Veo
 

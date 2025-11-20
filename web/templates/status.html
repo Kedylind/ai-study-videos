@@ -15,16 +15,50 @@
         <a href="/result/{{ pmid }}" class="btn-secondary">Open result page</a>
       </div>
     </div>
+  {% elif progress.status == "failed" %}
+    <div class="alert alert-error" style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
+      <p><strong>❌ Video generation failed</strong></p>
+      {% if error_message %}
+        <p>{{ error_message }}</p>
+      {% elif progress.error %}
+        <p>{{ progress.error }}</p>
+      {% else %}
+        <p>An error occurred during video generation. Please check the log below for details.</p>
+      {% endif %}
+    </div>
   {% else %}
     <div class="alert alert-info">
       <p>Pipeline is running or queued. Refresh this page to update status.</p>
     </div>
   {% endif %}
 
+  <!-- Progress Information -->
+  <h2>Progress</h2>
+  <div style="margin: 1em 0;">
+    <div style="background-color: #f0f0f0; border-radius: 4px; padding: 2px; margin-bottom: 0.5em;">
+      <div style="background-color: #4CAF50; height: 24px; border-radius: 4px; width: {{ progress.progress_percent }}%; transition: width 0.3s;"></div>
+    </div>
+    <p><strong>{{ progress.progress_percent }}%</strong> complete ({{ progress.completed_steps|length }} of {{ progress.total_steps }} steps)</p>
+    
+    {% if progress.current_step %}
+      <p><strong>Current step:</strong> {{ progress.current_step }}</p>
+    {% endif %}
+    
+    {% if progress.completed_steps %}
+      <p><strong>Completed steps:</strong></p>
+      <ul>
+        {% for step in progress.completed_steps %}
+          <li>✓ {{ step }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+
   <h2>Pipeline log (tail)</h2>
-  <pre>{{ log_tail }}</pre>
+  <pre style="background-color: #f5f5f5; padding: 1em; border-radius: 4px; overflow-x: auto; max-height: 400px; overflow-y: auto;">{{ log_tail|default:"(No log available yet)" }}</pre>
 
   <div class="button-group">
     <a href="/upload/" class="btn-primary">Generate another video</a>
+    <a href="?_json=1" class="btn-secondary" target="_blank">View JSON status</a>
   </div>
 {% endblock %}
