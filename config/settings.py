@@ -53,6 +53,10 @@ except ImportError:
 # Security & Secrets
 # ============================================================================
 
+# Debug Mode
+# Default to False for production safety - explicitly set DEBUG=True for local development
+DEBUG = os.getenv("DEBUG", "False") == "True"
+
 # Django Secret Key
 # Generate with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 # IMPORTANT: Use a strong, unique key in production!
@@ -66,10 +70,6 @@ if not DEBUG and SECRET_KEY == "dev-secret-not-for-production":
         "This is INSECURE for production. Set SECRET_KEY environment variable.",
         UserWarning
     )
-
-# Debug Mode
-# Default to False for production safety - explicitly set DEBUG=True for local development
-DEBUG = os.getenv("DEBUG", "False") == "True"
 
 # Video Generation Access Code
 # Required code that users must provide to generate videos via web UI or API
