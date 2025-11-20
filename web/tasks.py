@@ -8,6 +8,7 @@ Tasks are executed by Celery workers and survive server restarts.
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,13 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, name="web.tasks.generate_video_task")
+@shared_task(
+    bind=True,
+    name="web.tasks.generate_video_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 0},  # Don't auto-retry, but catch all exceptions
+    reject_on_worker_lost=False,  # Don't reject task if worker dies
+)
 def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
     """
     Celery task to generate video from a PubMed paper.
@@ -74,22 +81,83 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         python_exe = sys.executable
         script_path = Path(settings.BASE_DIR) / "kyle-code" / "main.py"
         
+        # Verify script exists
+        if not script_path.exists():
+            raise FileNotFoundError(f"Pipeline script not found: {script_path}")
+        
         cmd = [python_exe, str(script_path), "generate-video", pmid, str(output_path)]
         
+        logger.info(f"Running command: {' '.join(cmd)}")
+        logger.info(f"Working directory: {settings.BASE_DIR}")
+        
         env = os.environ.copy()
+        # Ensure Python doesn't buffer output so we see logs in real-time
+        env["PYTHONUNBUFFERED"] = "1"
         
         # Run pipeline and capture output
-        with open(log_path, "ab") as log_file:
-            process = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                env=env,
-                cwd=str(settings.BASE_DIR),
-            )
-            
-            # Wait for process to complete
-            return_code = process.wait()
+        process = None
+        try:
+            with open(log_path, "ab") as log_file:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    env=env,
+                    cwd=str(settings.BASE_DIR),
+                    start_new_session=True,  # Create new process group
+                )
+                
+                logger.info(f"Started subprocess with PID: {process.pid}")
+                
+                # Wait for process to complete with timeout handling
+                # Use Celery's time limit minus a buffer for cleanup
+                timeout_seconds = settings.CELERY_TASK_TIME_LIMIT - 60  # Leave 60s buffer
+                try:
+                    return_code = process.wait(timeout=timeout_seconds)
+                    logger.info(f"Subprocess completed with return code: {return_code}")
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Subprocess timed out after {timeout_seconds} seconds")
+                    # Try graceful termination first
+                    try:
+                        process.terminate()
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        # Force kill if it doesn't terminate
+                        logger.warning("Subprocess didn't terminate, forcing kill")
+                        process.kill()
+                        process.wait()
+                    return_code = -1
+                    raise Exception(f"Pipeline timed out after {timeout_seconds} seconds")
+        except subprocess.SubprocessError as e:
+            logger.exception(f"Subprocess error: {e}")
+            return_code = -1
+            # Clean up process if it exists
+            if process and process.poll() is None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except:
+                    try:
+                        process.kill()
+                        process.wait()
+                    except:
+                        pass
+            raise Exception(f"Failed to start or run pipeline subprocess: {e}")
+        except Exception as e:
+            logger.exception(f"Unexpected error during subprocess execution: {e}")
+            # Clean up process if it exists
+            if process and process.poll() is None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except:
+                    try:
+                        process.kill()
+                        process.wait()
+                    except:
+                        pass
+            return_code = -1
+            raise
         
         # Check if pipeline succeeded
         final_video = output_path / "final_video.mp4"
@@ -118,8 +186,15 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
                 }
             )
     
+    except KeyboardInterrupt:
+        # Handle keyboard interrupt gracefully
+        logger.warning(f"Task interrupted for {pmid}")
+        task_result["status"] = "failed"
+        task_result["error"] = "Task was interrupted"
+        task_result["error_type"] = "task_error"
+        raise  # Re-raise to let Celery handle it
     except Exception as e:
-        # Unexpected error in task execution itself
+        # Catch ALL other exceptions to prevent worker crash
         error_message = f"Task execution error: {str(e)}"
         task_result["status"] = "failed"
         task_result["error"] = error_message
@@ -128,14 +203,17 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         logger.exception(f"Unexpected error in video generation task for {pmid}")
         
         # Update task state
-        self.update_state(
-            state="FAILURE",
-            meta={
-                "pmid": pmid,
-                "error": error_message,
-                "error_type": "task_error",
-            }
-        )
+        try:
+            self.update_state(
+                state="FAILURE",
+                meta={
+                    "pmid": pmid,
+                    "error": error_message,
+                    "error_type": "task_error",
+                }
+            )
+        except Exception as state_error:
+            logger.error(f"Failed to update task state: {state_error}")
     
     finally:
         # Save task result to file for status endpoint to read
