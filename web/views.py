@@ -411,10 +411,24 @@ def pipeline_status(request, pmid: str):
     final_video = output_dir / "final_video.mp4"
     log_path = output_dir / "pipeline.log"
 
+    # Get progress with error handling
+    try:
+        progress = _get_pipeline_progress(output_dir)
+    except Exception as e:
+        # Fallback progress dict if _get_pipeline_progress fails
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.exception(f"Error getting pipeline progress for {pmid}: {e}")
+        progress = {
+            "status": "pending",
+            "current_step": None,
+            "completed_steps": [],
+            "progress_percent": 0,
+            "total_steps": 5,
+        }
+
     if request.GET.get("_json"):
         # JSON status endpoint - use the new progress tracking
-        progress = _get_pipeline_progress(output_dir)
-        
         status = {
             "pmid": pmid,
             "exists": output_dir.exists(),
@@ -422,10 +436,10 @@ def pipeline_status(request, pmid: str):
             "final_video_url": (
                 f"{settings.MEDIA_URL}{pmid}/final_video.mp4" if final_video.exists() else None
             ),
-            "status": progress["status"],
-            "current_step": progress["current_step"],
-            "completed_steps": progress["completed_steps"],
-            "progress_percent": progress["progress_percent"],
+            "status": progress.get("status", "pending"),
+            "current_step": progress.get("current_step"),
+            "completed_steps": progress.get("completed_steps", []),
+            "progress_percent": progress.get("progress_percent", 0),
         }
         
         # Add error information if available
@@ -449,7 +463,6 @@ def pipeline_status(request, pmid: str):
         return JsonResponse(status)
 
     # Render an HTML status page
-    progress = _get_pipeline_progress(output_dir)
     log_tail = ""
     if log_path.exists():
         try:

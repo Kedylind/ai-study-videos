@@ -79,8 +79,8 @@
     // Auto-refresh status page
     const pmid = "{{ pmid }}";
     let refreshInterval = null;
-    let isCompleted = {{ final_video_exists|yesno:"true,false" }};
-    let isFailed = {{ progress.status == "failed"|yesno:"true,false" }};
+    let isCompleted = {% if final_video_exists %}true{% else %}false{% endif %};
+    let isFailed = {% if progress.status|default:"" == "failed" %}true{% else %}false{% endif %};
 
     function updateStatus() {
       fetch(`/status/${pmid}/?_json=1`)
