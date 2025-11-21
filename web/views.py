@@ -124,8 +124,8 @@ def static_debug(request):
 
 
 def home(request):
-    # Render a small landing page with a link to the upload UI
-    return render(request, "index.html")
+    # Render the beautiful landing page
+    return render(request, "landing.html")
 
 
 def _get_pipeline_progress(output_dir: Path) -> Dict:
