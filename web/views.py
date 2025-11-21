@@ -562,10 +562,17 @@ def pipeline_status(request, pmid: str):
     if progress.get("error_type"):
         error_message = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
 
+    # Use dedicated video endpoint if video exists, otherwise use media URL
+    if final_video.exists():
+        from django.urls import reverse
+        final_video_url = reverse("serve_video", args=[pmid])
+    else:
+        final_video_url = f"{settings.MEDIA_URL}{pmid}/final_video.mp4"
+    
     context = {
         "pmid": pmid,
         "final_video_exists": final_video.exists(),
-        "final_video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4",
+        "final_video_url": final_video_url,
         "log_tail": log_tail,
         "progress": progress,
         "error_message": error_message,
@@ -578,8 +585,8 @@ def pipeline_result(request, pmid: str):
     output_dir = Path(settings.MEDIA_ROOT) / pmid
     final_video = output_dir / "final_video.mp4"
     if final_video.exists():
-        # Use absolute URL for video
-        video_url = f"{settings.MEDIA_URL}{pmid}/final_video.mp4"
+        # Use dedicated video endpoint
+        video_url = reverse("serve_video", args=[pmid])
         return render(request, "result.html", {"pmid": pmid, "video_url": video_url})
     else:
         return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
