@@ -14,6 +14,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
 from .tasks import generate_video_task, get_task_status
+from celery.result import AsyncResult
+from config.celery import app as celery_app
 
 
 def _get_user_friendly_error(error_type: str, error_detail: str = "") -> str:
@@ -170,10 +172,47 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     error_type = None
     
     # Check Celery task status for error information FIRST (most reliable)
-    # Always try to get task result - the output_dir should exist if task ran
+    # Method 1: Try to get task status directly from Celery's result backend
     task_result = None
     pmid = output_dir.name
-    task_result = get_task_status(pmid)
+    task_id_file = output_dir / "task_id.txt"
+    
+    # Try to get task status from Celery result backend first (most reliable)
+    if task_id_file.exists():
+        try:
+            with open(task_id_file, "r") as f:
+                task_id = f.read().strip()
+            if task_id:
+                async_result = AsyncResult(task_id, app=celery_app)
+                if async_result.ready():
+                    # Task has completed (success or failure)
+                    try:
+                        result = async_result.get(timeout=1)  # Quick timeout
+                        if isinstance(result, dict):
+                            task_result = result
+                            # Ensure status is set correctly
+                            if async_result.failed():
+                                task_result["status"] = "failed"
+                            elif async_result.successful() and result.get("status") == "failed":
+                                # Task succeeded from Celery's perspective but pipeline failed
+                                task_result["status"] = "failed"
+                    except Exception as e:
+                        # If we can't get result, check if task failed
+                        if async_result.failed():
+                            try:
+                                task_result = {
+                                    "status": "failed",
+                                    "error": str(async_result.info) if async_result.info else "Task failed",
+                                    "error_type": "task_error"
+                                }
+                            except:
+                                pass
+        except Exception:
+            pass  # Fall through to file-based check
+    
+    # Method 2: Fall back to reading task_result.json file
+    if not task_result:
+        task_result = get_task_status(pmid)
     
     # Priority 1: Check task result FIRST (most reliable source of truth)
     # This should be checked before anything else to catch failures immediately
@@ -370,8 +409,14 @@ def _start_pipeline_async(pmid: str, output_dir: Path):
     # Start Celery task
     task = generate_video_task.delay(pmid, str(output_dir))
     
+    # Store task ID in a file so we can check status via Celery's result backend
+    task_id_file = output_dir / "task_id.txt"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(task_id_file, "w") as f:
+        f.write(task.id)
+    
     # Task is now queued and will be processed by a Celery worker
-    # Status can be checked via the task ID or by reading the task_result.json file
+    # Status can be checked via the task ID (Celery result backend) or by reading the task_result.json file
 
 
 @login_required
