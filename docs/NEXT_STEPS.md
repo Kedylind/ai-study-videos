@@ -21,91 +21,99 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ## 🚀 High Priority (Production Readiness)
 
-### 1. Make Video Generation Survive Server Restarts (Celery)
-**Status:** ✅ Implemented (needs testing in production)  
-**Priority:** 🟡 Medium (testing/deployment)  
-**Estimated Effort:** 1 hour (testing and deployment verification)
+### 1. Add Database Models for Job Tracking
+**Status:** Not implemented  
+**Priority:** 🔴 Critical  
+**Estimated Effort:** 2-3 hours
 
 **Problem:**
-- Current implementation uses daemon thread that dies on server restart
-- Pipeline stops if user closes browser or server restarts
-- No persistence of running jobs
-- No error messages shown to users when pipeline fails
+- Current implementation uses file-based status tracking (checking file existence)
+- Complex status checking logic with multiple fallback methods
+- No way to query all videos or track user history
+- Doesn't scale to multiple servers
+- No user association with generated videos
 
-**Solution: Celery Task Queue**
-- Use Celery workers to run video generation tasks
-- Tasks stored in Redis/RabbitMQ broker
-- Tasks survive server restarts and browser closes
-- Automatic retries on failures
-- Better monitoring and error tracking
+**Solution: Database Models**
+- Create `VideoGenerationJob` model to track each generation
+- Store status, progress, errors in database
+- Link jobs to users for history tracking
+- Single source of truth for status
 
 **What needs to be done:**
 
-1. **Install Celery dependencies:**
-   - Add `celery`, `redis` (or `kombu` for RabbitMQ) to `requirements.txt`
-   - Install Redis service on Railway (or use RabbitMQ)
+1. **Create database models:**
+   - `VideoGenerationJob` model with fields:
+     - `user` (ForeignKey to User)
+     - `paper_id` (CharField, indexed)
+     - `status` (CharField: pending, running, completed, failed)
+     - `progress_percent` (IntegerField)
+     - `current_step` (CharField, nullable)
+     - `error_message` (TextField, blank)
+     - `error_type` (CharField, blank)
+     - `task_id` (CharField for Celery task ID)
+     - `final_video_path` (CharField)
+     - `created_at`, `updated_at`, `completed_at` (DateTimeFields)
 
-2. **Create Celery configuration:**
-   - Create `config/celery.py` with Celery app setup
-   - Configure broker URL from environment variable
-   - Set up result backend
+2. **Create and run migrations:**
+   - `python manage.py makemigrations`
+   - `python manage.py migrate`
 
-3. **Create Celery task:**
-   - Create `web/tasks.py` with `generate_video_task` function
-   - Move pipeline execution logic to Celery task
-   - Add error handling and logging
+3. **Update Celery task to save to database:**
+   - Create/update `VideoGenerationJob` record when task starts
+   - Update status and progress as pipeline runs
+   - Save error information on failure
+   - Mark as completed when video is ready
 
-4. **Update views to use Celery:**
-   - Replace `_start_pipeline_async()` with Celery task call
-   - Update status endpoint to check Celery task status
-   - Add error message handling for failed tasks
+4. **Simplify status checking:**
+   - Replace complex `_get_pipeline_progress()` with simple database query
+   - Remove file-based status checks (keep as fallback initially)
+   - Update `pipeline_status()` view to read from database
 
-5. **Add error handling and user feedback:**
-   - Capture pipeline errors (paper not found, API failures, etc.)
-   - Store error messages in task result or log file
-   - Display clear error messages in status page
-   - Show specific error types (e.g., "Paper not found in PubMed Central", "API key invalid", "Video generation failed")
-
-6. **Update deployment:**
-   - Add Celery worker process to `Procfile`
-   - Configure Redis/RabbitMQ service on Railway
-   - Set `CELERY_BROKER_URL` environment variable
+5. **Update views:**
+   - Create `VideoGenerationJob` when user submits paper
+   - Link job to current user
+   - Store Celery task ID in job record
 
 **Code changes needed:**
-- `requirements.txt`: Add `celery` and `redis` (or `kombu`)
-- `config/celery.py`: Create Celery app configuration (new file)
-- `web/tasks.py`: Create `generate_video_task` Celery task (new file)
-- `web/views.py`: Replace `_start_pipeline_async()` with Celery task call
-- `web/views.py`: Update `pipeline_status()` to check Celery task status and show errors
-- `Procfile`: Add `worker: celery -A config worker --loglevel=info`
-
-**Error handling requirements:**
-- Catch and log all pipeline exceptions
-- Store error messages in task result or readable log format
-- Display user-friendly error messages in status page:
-  - "Paper not found in PubMed Central" (for invalid PMID/PMCID)
-  - "API key invalid or expired" (for API authentication errors)
-  - "Video generation failed: [specific error]" (for other failures)
-  - "Pipeline timeout" (if task takes too long)
-- Show error details in status JSON endpoint for debugging
-- Update status page template to display error messages clearly
+- `web/models.py`: Create `VideoGenerationJob` model (new file or add to existing)
+- `web/tasks.py`: Update `generate_video_task()` to save status to database
+- `web/views.py`: Create job record in `upload_paper()` view
+- `web/views.py`: Simplify `_get_pipeline_progress()` to query database
+- `web/views.py`: Update `pipeline_status()` to use database
 
 **Benefits:**
-- ✅ Tasks survive server restarts
-- ✅ Tasks survive browser close
-- ✅ Automatic retries on failures
-- ✅ Better monitoring and scalability
-- ✅ Production-ready reliability
-- ✅ Clear error messages for users
+- ✅ Single source of truth for status
+- ✅ Simple, reliable status checking
+- ✅ User history tracking
+- ✅ Scalable to multiple servers
+- ✅ Easy to query and filter videos
+- ✅ Enables video management UI
+- ✅ Better for analytics and monitoring
 
 **Action items:**
-- [x] Install Celery and Redis dependencies
-- [x] Create `config/celery.py` configuration
-- [x] Create `web/tasks.py` with video generation task
-- [x] Update `web/views.py` to use Celery task
-- [x] Add error handling and user feedback
-- [x] Update status endpoint to show errors
-- [x] Update `Procfile` for Celery worker
+- [ ] Create `VideoGenerationJob` model
+- [ ] Create and run database migrations
+- [ ] Update Celery task to save status to database
+- [ ] Simplify status checking to use database
+- [ ] Update views to create/update job records
+- [ ] Test status updates work correctly
+- [ ] Test user association works
+- [ ] (Optional) Add `Paper` model for paper metadata
+
+---
+
+### 2. Celery Production Deployment
+**Status:** ✅ Implemented locally (needs production setup)  
+**Priority:** 🟠 High  
+**Estimated Effort:** 1 hour
+
+**What needs to be done:**
+- Set up Redis service on Railway
+- Configure `CELERY_BROKER_URL` environment variable
+- Test that tasks survive server restart in production
+- Verify error handling works in production
+
+**Action items:**
 - [ ] Set up Redis service on Railway
 - [ ] Configure `CELERY_BROKER_URL` environment variable
 - [ ] Test that tasks survive server restart (production)
@@ -113,7 +121,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 2. Complete File Upload Feature
+### 3. Complete File Upload Feature
 **Status:** UI exists, backend processing incomplete  
 **Priority:** 🟠 High  
 **Estimated Effort:** 3-4 hours
@@ -155,54 +163,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 3. Access Control & Secrets Management
-**Status:** Basic environment variables, needs hardening + access control  
-**Priority:** 🟠 High  
-**Estimated Effort:** 2-3 hours (1 hour for access control + 1-2 hours for secrets)
-
-**Part A: Access Control for Video Generation**
-**Status:** ✅ Completed  
-**Priority:** ✅ Done  
-**Estimated Effort:** Completed
-
-**What needs to be done:**
-- Implement access code validation to prevent unauthorized API usage
-- Add access code field to upload form (web UI)
-- Add access code validation to API endpoint
-- Store access code in environment variable
-- Update error messages for invalid codes
-
-**Implementation (Option 1 - Per-Request Access Code):**
-1. Add `access_code` field to `PaperUploadForm` in `web/forms.py`
-2. Validate access code in `upload_paper` view before starting pipeline
-3. Validate access code in `api_start_generation` API endpoint
-4. Update `upload.html` template to include access code input field
-5. Set `VIDEO_ACCESS_CODE` environment variable in Railway
-
-**Code changes needed:**
-- `web/forms.py`: Add `access_code = forms.CharField(...)` to `PaperUploadForm`
-- `web/views.py`: Validate code against `os.getenv("VIDEO_ACCESS_CODE")` before pipeline start
-- `web/templates/upload.html`: Add access code input field with label
-- `config/settings.py`: Document `VIDEO_ACCESS_CODE` in comments
-
-**Benefits:**
-- Prevents unauthorized users from using expensive API calls
-- Easy to rotate codes by changing environment variable
-- No database changes required
-- Works immediately after deployment
-
-**Action items:**
-- [x] Add access code field to upload form
-- [x] Implement validation in web view
-- [x] Implement validation in API endpoint
-- [x] Update upload template
-- [x] Set `VIDEO_ACCESS_CODE` in Railway environment variables
-- [x] Test with valid/invalid codes
-- [x] Document code distribution process (in .env.example)
-
----
-
-**Part B: Secrets Management**
+### 4. Secrets Management
 **Status:** Mostly complete (needs production verification)  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 30 minutes (verification)
@@ -233,7 +194,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ## 📋 Medium Priority (Feature Enhancements)
 
-### 4. Cloud Storage Integration (S3/GCS)
+### 5. Cloud Storage Integration (S3/GCS)
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 4-6 hours
@@ -257,7 +218,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 5. Video Management UI
+### 6. Video Management UI
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 4-5 hours
@@ -277,7 +238,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 6. Error Monitoring & Logging
+### 7. Error Monitoring & Logging
 **Status:** Basic logging exists  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -296,7 +257,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 7. Rate Limiting & API Quota Management
+### 8. Rate Limiting & API Quota Management
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -317,7 +278,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ## 🔧 Low Priority (Nice to Have)
 
-### 8. Email Verification
+### 9. Email Verification
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -330,7 +291,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 9. Password Reset
+### 10. Password Reset
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -343,7 +304,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 10. User Profiles
+### 11. User Profiles
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 3-4 hours
@@ -356,7 +317,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 11. Django Admin Configuration
+### 12. Django Admin Configuration
 **Status:** Basic admin, not customized  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 1-2 hours
@@ -371,7 +332,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ## 📚 Documentation Tasks
 
-### 12. Deployment Guide
+### 13. Deployment Guide
 **Status:** Partial (Railway setup exists)  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 2-3 hours
@@ -385,7 +346,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 13. Architecture Documentation
+### 14. Architecture Documentation
 **Status:** Not created  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -400,7 +361,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ## 🧪 Testing & Quality
 
-### 14. Add Unit Tests
+### 15. Add Unit Tests
 **Status:** No tests exist  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 6-8 hours
@@ -414,7 +375,46 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 15. Error Handling Improvements
+### 16. Real-Time Status Updates (WebSockets/SSE)
+**Status:** Not implemented  
+**Priority:** 🟢 Low (Nice to Have)  
+**Estimated Effort:** 4-6 hours
+
+**Current approach:**
+- JavaScript polls status endpoint every 3 seconds
+- Works but not optimal for real-time updates
+
+**Better approach:**
+- Use WebSockets or Server-Sent Events (SSE) for real-time updates
+- Push status updates to client when they occur
+- No polling needed
+
+**What needs to be done:**
+- Choose technology (WebSockets via Django Channels, or SSE)
+- Implement real-time update endpoint
+- Update frontend to use WebSocket/SSE connection
+- Handle connection errors gracefully
+
+**Options:**
+1. **Server-Sent Events (SSE)** - Simpler, one-way (server → client)
+2. **WebSockets (Django Channels)** - Full bidirectional, more complex
+
+**Benefits:**
+- ✅ Real-time updates (no delay)
+- ✅ Less server load (no polling)
+- ✅ Better user experience
+- ✅ More efficient
+
+**Action items:**
+- [ ] Choose WebSockets vs SSE
+- [ ] Implement real-time update endpoint
+- [ ] Update frontend JavaScript
+- [ ] Test connection handling
+- [ ] Test with multiple concurrent users
+
+---
+
+### 17. Error Handling Improvements
 **Status:** Basic error handling  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -443,14 +443,17 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 - [x] Secrets management documentation (.env.example)
 
 ### In Progress 🚧
+- [ ] Database models for job tracking
 - [ ] Celery production deployment (Redis setup on Railway)
 - [ ] File upload processing (currently fails - uses filename as PubMed ID)
 
 ### Planned 📅
+- [ ] Database models for job tracking
 - [ ] Cloud storage integration
 - [ ] Video management UI
 - [ ] Error monitoring
 - [ ] Rate limiting
+- [ ] Real-time status updates (WebSockets/SSE)
 - [ ] Email verification
 - [ ] Password reset
 - [ ] User profiles
@@ -461,20 +464,22 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 ## 🎯 Recommended Implementation Order
 
 **Sprint 1 (Production Readiness):**
-1. ✅ Integrate Celery task queue (local complete, needs production deployment)
-2. Complete file upload feature
-3. ✅ Secrets management & security (mostly complete)
+1. Add database models for job tracking (critical for scalability)
+2. ✅ Celery production deployment (Redis setup)
+3. Complete file upload feature
+4. ✅ Secrets management (mostly complete)
 
 **Sprint 2 (Core Features):**
-4. Cloud storage integration
-5. Video management UI
-6. Error monitoring
+5. Cloud storage integration
+6. Video management UI (enabled by database models)
+7. Error monitoring
 
 **Sprint 3 (Polish):**
-7. Rate limiting
-8. Email verification
-9. Password reset
-10. Testing
+8. Rate limiting
+9. Email verification
+10. Password reset
+11. Real-time status updates (WebSockets/SSE)
+12. Testing
 
 ---
 
