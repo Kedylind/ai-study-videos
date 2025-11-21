@@ -1,5 +1,4 @@
 import os
-import json
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -163,12 +162,6 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     completed_count = len(completed_steps)
     progress_percent = int((completed_count / total_steps) * 100)
     
-    # Check Celery task status for error information FIRST (most reliable)
-    task_result = None
-    if output_dir.exists():
-        pmid = output_dir.name
-        task_result = get_task_status(pmid)
-    
     # Check if pipeline failed (has log but no final video and not currently running)
     log_path = output_dir / "pipeline.log"
     final_video = output_dir / "final_video.mp4"
@@ -176,32 +169,45 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     error = None
     error_type = None
     
-    # Priority 1: Check if final video exists (completed)
-    if final_video.exists():
-        status = "completed"
-    # Priority 2: Check task result for explicit failure (most reliable - check this FIRST)
-    elif task_result:
+    # Check Celery task status for error information FIRST (most reliable)
+    # Always try to get task result - the output_dir should exist if task ran
+    task_result = None
+    pmid = output_dir.name
+    task_result = get_task_status(pmid)
+    
+    # Priority 1: Check task result FIRST (most reliable source of truth)
+    # This should be checked before anything else to catch failures immediately
+    if task_result:
         task_status = task_result.get("status")
         if task_status == "failed":
             status = "failed"
             error = task_result.get("error")
             error_type = task_result.get("error_type")
+            # Don't check anything else - task result is definitive
         elif task_status == "completed":
             status = "completed"
         elif task_status == "running":
-            # Even if task says running, check log for failure indicators
+            # Task says running, but check log for failure indicators (task might have failed but not updated status yet)
             if log_path.exists():
                 try:
                     with open(log_path, "rb") as f:
                         f.seek(max(0, f.tell() - 8192))
                         log_content = f.read().decode(errors="replace")
-                        if "pipeline failed" in log_content.lower() or ("✗" in log_content and "failed" in log_content.lower()):
+                        # Check for various failure indicators in log
+                        log_lower = log_content.lower()
+                        if ("pipeline failed" in log_lower or 
+                            ("✗" in log_content and "failed" in log_lower) or
+                            "http error" in log_lower or
+                            "bad request" in log_lower or
+                            "step 'fetch-paper' failed" in log_lower):
                             # Log shows failure even though task says running - trust the log
                             status = "failed"
                             # Extract error from log
                             lines = log_content.split("\n")
                             for line in reversed(lines):
-                                if ("✗" in line or "failed" in line.lower()) and line.strip():
+                                if (("✗" in line or "failed" in line.lower() or "error" in line.lower()) and 
+                                    line.strip() and 
+                                    not line.strip().startswith("2025-")):  # Skip timestamp-only lines
                                     if not error:
                                         error = line.strip()
                                     break
@@ -209,6 +215,10 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
                                 error_lower = error.lower()
                                 if "not available in pubmed central" in error_lower:
                                     error_type = "paper_not_found"
+                                elif "http error 400" in error_lower or "bad request" in error_lower:
+                                    error_type = "pipeline_error"
+                                elif "http error 400" in error_lower or "bad request" in error_lower:
+                                    error_type = "pipeline_error"
                 except:
                     pass
             if status != "failed":
@@ -250,6 +260,9 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
                         status = "running"
             else:
                 status = "pending"
+    # Priority 2: Check if final video exists (completed)
+    elif final_video.exists():
+        status = "completed"
     # Priority 3: Check if log exists and determine if still running or failed
     elif log_path.exists():
         try:
@@ -264,17 +277,26 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
                     f.seek(max(0, f.tell() - 8192))
                     log_content = f.read().decode(errors="replace")
                     # Check for explicit failure messages
-                    if "pipeline failed" in log_content.lower() or "✗" in log_content:
+                    log_lower = log_content.lower()
+                    if ("pipeline failed" in log_lower or 
+                        "✗" in log_content or
+                        "http error" in log_lower or
+                        "bad request" in log_lower or
+                        "step 'fetch-paper' failed" in log_lower):
                         log_has_error = True
                         # Extract error message
                         lines = log_content.split("\n")
                         for line in reversed(lines):
-                            if ("✗" in line or "failed" in line.lower() or "error" in line.lower()) and line.strip():
+                            if (("✗" in line or "failed" in line.lower() or "error" in line.lower()) and 
+                                line.strip() and
+                                not line.strip().startswith("2025-")):  # Skip timestamp-only lines
                                 if not error:  # Only set if we don't already have error from task_result
                                     error = line.strip()
                                     # Classify error type
                                     if "not available in pubmed central" in line.lower():
                                         error_type = "paper_not_found"
+                                    elif "http error 400" in line.lower() or "bad request" in line.lower():
+                                        error_type = "pipeline_error"
                                 break
             except:
                 pass
