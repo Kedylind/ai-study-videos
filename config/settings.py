@@ -199,6 +199,14 @@ if sys.platform == "win32":
 else:
     CELERY_WORKER_POOL = "prefork"
 
+# Celery worker concurrency (number of worker processes)
+# Limit to 2 for Railway to avoid resource exhaustion
+# Can be overridden with --concurrency flag in Procfile
+CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
+
+# Max tasks per child worker (helps prevent memory leaks)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "50"))
+
 # ============================================================================
 # Security Settings (Production)
 # ============================================================================
