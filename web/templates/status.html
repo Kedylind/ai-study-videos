@@ -19,11 +19,13 @@
     <div class="alert alert-error" style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
       <p><strong>❌ Video generation failed</strong></p>
       {% if error_message %}
-        <p>{{ error_message }}</p>
+        <p style="color: #c00; font-weight: 500;">{{ error_message }}</p>
       {% elif progress.error %}
-        <p>{{ progress.error }}</p>
+        <p style="color: #c00; font-weight: 500;">{{ progress.error }}</p>
+      {% elif progress.error_type %}
+        <p style="color: #c00; font-weight: 500;">An error occurred: {{ progress.error_type }}</p>
       {% else %}
-        <p>An error occurred during video generation. Please check the log below for details.</p>
+        <p style="color: #c00; font-weight: 500;">An error occurred during video generation. Please check the log below for details.</p>
       {% endif %}
     </div>
   {% else %}

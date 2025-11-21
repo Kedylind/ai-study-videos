@@ -163,7 +163,7 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     completed_count = len(completed_steps)
     progress_percent = int((completed_count / total_steps) * 100)
     
-    # Check Celery task status for error information
+    # Check Celery task status for error information FIRST (most reliable)
     task_result = None
     if output_dir.exists():
         pmid = output_dir.name
@@ -176,30 +176,108 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     error = None
     error_type = None
     
+    # Priority 1: Check if final video exists (completed)
     if final_video.exists():
         status = "completed"
-    elif task_result and task_result.get("status") == "failed":
-        # Task explicitly failed
-        status = "failed"
-        error = task_result.get("error")
-        error_type = task_result.get("error_type")
-    elif log_path.exists() and current_step is None and completed_count < total_steps:
-        # Check if process is still running by looking for recent log activity
+    # Priority 2: Check task result for explicit failure (most reliable - check this FIRST)
+    elif task_result:
+        task_status = task_result.get("status")
+        if task_status == "failed":
+            status = "failed"
+            error = task_result.get("error")
+            error_type = task_result.get("error_type")
+        elif task_status == "completed":
+            status = "completed"
+        elif task_status == "running":
+            status = "running"
+        else:
+            # Task result exists but status is unclear, check other indicators
+            if current_step:
+                status = "running"
+            elif log_path.exists():
+                # Check log timestamp
+                try:
+                    import time
+                    mtime = log_path.stat().st_mtime
+                    if time.time() - mtime < 120:  # Recent activity
+                        status = "running"
+                    else:
+                        status = "failed"
+                        error = task_result.get("error")
+                        error_type = task_result.get("error_type")
+                except:
+                    status = "running"
+            else:
+                status = "pending"
+    # Priority 3: Check if log exists and determine if still running or failed
+    elif log_path.exists():
         try:
             import time
             mtime = log_path.stat().st_mtime
-            if time.time() - mtime < 60:  # Log updated in last minute
-                status = "running"
+            time_since_update = time.time() - mtime
+            
+            # Check log content for failure indicators first
+            log_has_error = False
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(max(0, f.tell() - 8192))
+                    log_content = f.read().decode(errors="replace")
+                    # Check for explicit failure messages
+                    if "pipeline failed" in log_content.lower() or "✗" in log_content:
+                        log_has_error = True
+                        # Extract error message
+                        lines = log_content.split("\n")
+                        for line in reversed(lines):
+                            if ("✗" in line or "failed" in line.lower() or "error" in line.lower()) and line.strip():
+                                if not error:  # Only set if we don't already have error from task_result
+                                    error = line.strip()
+                                    # Classify error type
+                                    if "not available in pubmed central" in line.lower():
+                                        error_type = "paper_not_found"
+                                break
+            except:
+                pass
+            
+            # If log was updated recently (within 2 minutes)
+            if time_since_update < 120:
+                # But if log shows an error, it's failed (even if recent)
+                if log_has_error:
+                    status = "failed"
+                    if not error_type and error:
+                        # Classify error if we haven't already
+                        error_lower = error.lower()
+                        if "not available in pubmed central" in error_lower:
+                            error_type = "paper_not_found"
+                        elif "api key" in error_lower:
+                            error_type = "api_key_error"
+                elif current_step:
+                    status = "running"
+                else:
+                    status = "pending"
             else:
+                # Log hasn't been updated in 2+ minutes and no final video = likely failed
                 status = "failed"
-                # Try to get error from task result
-                if task_result:
-                    error = task_result.get("error")
-                    error_type = task_result.get("error_type")
-        except:
-            status = "running"
+                # Use error from log if we found one
+                if not error and log_has_error:
+                    # Try to extract error from log again
+                    try:
+                        with open(log_path, "rb") as f:
+                            f.seek(max(0, f.tell() - 8192))
+                            log_content = f.read().decode(errors="replace")
+                            lines = log_content.split("\n")
+                            for line in reversed(lines):
+                                if ("✗" in line or "failed" in line.lower()) and line.strip():
+                                    error = line.strip()
+                                    break
+                    except:
+                        pass
+        except Exception:
+            # If we can't check log, default based on current step
+            status = "running" if current_step else "pending"
+    # Priority 4: If there's a current step, it's running
     elif current_step:
         status = "running"
+    # Priority 5: Otherwise pending
     else:
         status = "pending"
     
