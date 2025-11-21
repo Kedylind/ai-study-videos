@@ -170,6 +170,19 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     
     error = None
     error_type = None
+    status = "pending"  # Initialize status
+    
+    # Priority 0: Check if final video exists (completed) - this is the most definitive check
+    # Check this FIRST before anything else - if video exists, we're done
+    if output_dir.exists() and final_video.exists():
+        status = "completed"
+        return {
+            "current_step": None,
+            "completed_steps": completed_steps,
+            "progress_percent": 100,
+            "status": "completed",
+            "total_steps": total_steps,
+        }
     
     # Check Celery task status for error information FIRST (most reliable)
     # Method 1: Try to get task status directly from Celery's result backend
@@ -224,7 +237,12 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
             error_type = task_result.get("error_type")
             # Don't check anything else - task result is definitive
         elif task_status == "completed":
-            status = "completed"
+            # Verify final video exists to confirm completion
+            if final_video.exists():
+                status = "completed"
+            else:
+                # Task says completed but video doesn't exist - might still be processing
+                status = "running"
         elif task_status == "running":
             # Task says running, but check log for failure indicators (task might have failed but not updated status yet)
             if log_path.exists():
