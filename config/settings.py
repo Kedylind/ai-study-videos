@@ -1,13 +1,33 @@
 from pathlib import Path
 import os
+import sys
 import dj_database_url
 
-# Load environment variables from .env file for local development
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # python-dotenv not installed, skip (not needed on Railway)
+# ============================================================================
+# Environment Variables
+# ============================================================================
+# 
+# This application requires the following environment variables:
+#
+# REQUIRED:
+#   - GEMINI_API_KEY: Google Gemini API key (for scene generation & TTS)
+#   - RUNWAYML_API_SECRET: RunwayML API key (for video generation)
+#   - VIDEO_ACCESS_CODE: Access code required to generate videos (security)
+#   - SECRET_KEY: Django secret key (generate with get_random_secret_key())
+#
+# OPTIONAL (with defaults):
+#   - DEBUG: Set to "True" for development, "False" for production
+#   - DATABASE_URL: PostgreSQL connection string (defaults to SQLite locally)
+#   - DATABASE_SSL: Set to "True" if database requires SSL
+#   - ALLOWED_HOSTS: Comma-separated list of allowed hostnames
+#   - CSRF_TRUSTED_ORIGINS: Comma-separated list of trusted origins
+#   - CELERY_BROKER_URL: Redis connection URL (required for Celery task queue)
+#     Example: redis://localhost:6379/0 (local) or redis://user:pass@host:port/db (production)
+#
+# For local development, create a .env file (see .env.example)
+# For production, set these in your deployment platform (Railway, etc.)
+#
+# ============================================================================
 
 def _csv(name, default=""):
     return [v.strip() for v in os.getenv(name, default).split(",") if v.strip()]
@@ -18,8 +38,46 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load environment variables from .env file for local development
+# Do this AFTER BASE_DIR is defined so we can use it
+try:
+    from dotenv import load_dotenv
+    # Explicitly load .env from project root
+    env_path = BASE_DIR / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+except ImportError:
+    pass  # python-dotenv not installed, skip (not needed on Railway)
+
+# ============================================================================
+# Security & Secrets
+# ============================================================================
+
+# Debug Mode
+# Default to False for production safety - explicitly set DEBUG=True for local development
+DEBUG = os.getenv("DEBUG", "False") == "True"
+
+# Django Secret Key
+# Generate with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+# IMPORTANT: Use a strong, unique key in production!
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-not-for-production")
-DEBUG = os.getenv("DEBUG", "True") == "True"
+
+# Warn if using default secret key in production
+if not DEBUG and SECRET_KEY == "dev-secret-not-for-production":
+    import warnings
+    warnings.warn(
+        "SECRET_KEY is not set! Using default dev secret. "
+        "This is INSECURE for production. Set SECRET_KEY environment variable.",
+        UserWarning
+    )
+
+# Video Generation Access Code
+# Required code that users must provide to generate videos via web UI or API
+# Prevents unauthorized usage of expensive API calls (Gemini, RunwayML)
+# Set via VIDEO_ACCESS_CODE environment variable in .env file or environment
+# REQUIRED: Must be set for security. If not set, video generation will fail with error.
+# Generate a strong code: python -c "import secrets; print(secrets.token_urlsafe(32))"
+VIDEO_ACCESS_CODE = os.getenv("VIDEO_ACCESS_CODE", None)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -100,3 +158,76 @@ AUTH_PASSWORD_VALIDATORS = [
         "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
+
+# ============================================================================
+# Celery Configuration
+# ============================================================================
+
+# Celery broker URL (Redis or RabbitMQ)
+# Railway provides Redis connection via REDIS_URL or REDISCLOUD_URL
+# For local development: redis://localhost:6379/0
+# Priority: CELERY_BROKER_URL > REDIS_URL > REDISCLOUD_URL > default
+CELERY_BROKER_URL = (
+    os.getenv("CELERY_BROKER_URL") or
+    os.getenv("REDIS_URL") or
+    os.getenv("REDISCLOUD_URL") or
+    "redis://localhost:6379/0"
+)
+
+# Celery result backend (optional, for storing task results)
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+
+# Celery task serialization
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+
+# Celery timezone
+CELERY_TIMEZONE = "UTC"
+
+# Celery task settings
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes hard limit
+CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 25 minutes soft limit (raises exception)
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+
+# Celery worker pool (use 'solo' for Windows, 'prefork' for Linux)
+# Windows doesn't support prefork pool properly, so use solo pool
+if sys.platform == "win32":
+    CELERY_WORKER_POOL = "solo"
+else:
+    CELERY_WORKER_POOL = "prefork"
+
+# Celery worker concurrency (number of worker processes)
+# Limit to 2 for Railway to avoid resource exhaustion
+# Can be overridden with --concurrency flag in Procfile
+CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
+
+# Max tasks per child worker (helps prevent memory leaks)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "50"))
+
+# ============================================================================
+# Security Settings (Production)
+# ============================================================================
+
+# Security headers (only in production)
+if not DEBUG:
+    SECURE_SSL_REDIRECT = False  # Railway handles SSL termination
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+# Internationalization
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
+USE_I18N = True
+USE_TZ = True
+
+# Default primary key field type
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

@@ -1,10 +1,21 @@
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
 import click
 from runwayml import RunwayML
+
+# Load environment variables from .env file (if it exists)
+try:
+    from dotenv import load_dotenv
+    # Load .env from project root (parent directory)
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # python-dotenv not installed, skip
 
 from pubmed import fetch_paper, PMCNotFoundError
 from scenes import generate_scenes, save_scenes, load_scenes
@@ -32,7 +43,7 @@ def cli():
     default="output.mp4",
     help="Output video file path (default: output.mp4)",
 )
-@click.option("--model", "-m", default="veo3.1", help="Model to use for generation")
+@click.option("--model", "-m", default="veo3.1_fast", help="Model to use for generation (default: veo3.1_fast)")
 @click.option(
     "--poll-interval",
     default=1,
@@ -86,7 +97,7 @@ def generate(prompt, output, model, poll_interval):
 @cli.command()
 @click.argument("prompt_file", type=click.File("r"))
 @click.option("--output", "-o", default="output.mp4", help="Output video file path")
-@click.option("--model", "-m", default="veo3.1", help="Model to use for generation")
+@click.option("--model", "-m", default="veo3.1_fast", help="Model to use for generation (default: veo3.1_fast)")
 @click.option(
     "--poll-interval", default=1, type=int, help="Seconds between status checks"
 )
@@ -320,7 +331,7 @@ def generate_videos_cmd(metadata_file, output_dir, max_workers, poll_interval):
 
     METADATA_FILE: Path to audio_metadata.json (from generate-audio command)
 
-    This will generate video clips for all scenes in parallel using Runway Veo 3.1.
+    This will generate video clips for all scenes in parallel using Runway Veo 3.1 Fast.
     Videos are generated with 9:16 aspect ratio (portrait/vertical) for TikTok.
 
     Output:
@@ -342,7 +353,7 @@ def generate_videos_cmd(metadata_file, output_dir, max_workers, poll_interval):
         click.echo(f"Loading metadata from {metadata_path}...")
         click.echo(f"Maximum parallel generations: {max_workers}")
         click.echo(f"Poll interval: {poll_interval}s")
-        click.echo("\nGenerating video clips with Runway Veo 3.1...")
+        click.echo("\nGenerating video clips with Runway Veo 3.1 Fast...")
         click.echo("(This may take several minutes depending on number of scenes...)")
         click.echo("")
 
@@ -552,7 +563,7 @@ def generate_video(
     1. fetch-paper: Download paper from PubMed Central
     2. generate-script: Create video script with scenes
     3. generate-audio: Generate TTS audio for each scene
-    4. generate-videos: Create video clips with Runway Veo 3.1
+    4. generate-videos: Create video clips with Runway Veo 3.1 Fast
     5. add-captions: Add burned-in captions to videos
 
     By default, the pipeline is idempotent - it will skip steps that

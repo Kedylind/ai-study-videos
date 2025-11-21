@@ -1,18 +1,73 @@
 import os
-import sys
-import threading
-import subprocess
 from pathlib import Path
+from typing import Dict, Optional
 
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
-from django.http import JsonResponse, HttpResponse, HttpResponseRedirect
+from django.http import JsonResponse, HttpResponse, HttpResponseRedirect, HttpResponseBadRequest
 from django.shortcuts import render, redirect
 from django.urls import reverse
+from django.views.decorators.http import require_http_methods
+from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
+from .tasks import generate_video_task, get_task_status
+from celery.result import AsyncResult
+from config.celery import app as celery_app
+
+
+def _get_user_friendly_error(error_type: str, error_detail: str = "") -> str:
+    """Convert error type to user-friendly error message.
+    
+    Args:
+        error_type: Error type from task classification
+        error_detail: Detailed error message
+        
+    Returns:
+        User-friendly error message
+    """
+    error_messages = {
+        "paper_not_found": "Paper not found in PubMed Central. Please check the PubMed ID or PMC ID and ensure the paper is open-access.",
+        "api_key_error": "API key invalid or expired. Please contact the administrator.",
+        "timeout": "Pipeline timeout. The video generation took too long. Please try again or contact support.",
+        "rate_limit": "API rate limit exceeded. Please wait a few minutes and try again.",
+        "pipeline_error": f"Video generation failed: {error_detail[:200] if error_detail else 'Unknown error'}",
+        "task_error": "Task execution error. Please try again or contact support.",
+        "unknown_error": f"An error occurred during video generation: {error_detail[:200] if error_detail else 'Unknown error'}",
+    }
+    
+    return error_messages.get(error_type, error_messages["unknown_error"])
+
+
+def _validate_access_code(access_code: str) -> bool:
+    """Validate the provided access code against the configured code.
+    
+    Args:
+        access_code: The access code to validate
+        
+    Returns:
+        True if the access code is valid, False otherwise
+        
+    Raises:
+        ValueError: If VIDEO_ACCESS_CODE is not configured (server misconfiguration)
+    """
+    expected_code = os.getenv("VIDEO_ACCESS_CODE")
+    
+    # Require access code to be configured for security
+    if not expected_code:
+        raise ValueError(
+            "VIDEO_ACCESS_CODE is not configured. "
+            "Please set VIDEO_ACCESS_CODE environment variable for security."
+        )
+    
+    # Require access code to be provided
+    if not access_code or not access_code.strip():
+        return False
+    
+    # Compare codes (case-sensitive)
+    return access_code.strip() == expected_code.strip()
 
 
 def health(request):
@@ -73,32 +128,313 @@ def home(request):
     return render(request, "landing.html")
 
 
-def _start_pipeline_async(pmid: str, output_dir: Path):
-    """Start the kyle-code pipeline in a background thread using subprocess.
-
-    This avoids importing the pipeline directly into Django and keeps
-    the execution isolated. Output (logs) are written to output_dir/pipeline.log.
+def _get_pipeline_progress(output_dir: Path) -> Dict:
+    """Check pipeline progress by examining output directory for step completion markers.
+    
+    Also checks Celery task status for error information.
+    
+    Returns a dict with:
+    - current_step: name of current step or None if complete
+    - completed_steps: list of completed step names
+    - progress_percent: 0-100
+    - status: 'pending', 'running', 'completed', 'failed'
+    - error: error message if failed (from Celery task)
+    - error_type: user-friendly error type
     """
+    steps = [
+        ("fetch-paper", lambda d: (d / "paper.json").exists()),
+        ("generate-script", lambda d: (d / "script.json").exists()),
+        ("generate-audio", lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
+        ("generate-videos", lambda d: (d / "clips" / ".videos_complete").exists()),
+        ("add-captions", lambda d: (d / "final_video.mp4").exists()),
+    ]
+    
+    completed_steps = []
+    current_step = None
+    
+    for step_name, check_func in steps:
+        if check_func(output_dir):
+            completed_steps.append(step_name)
+        else:
+            if current_step is None:
+                current_step = step_name
+            break
+    
+    total_steps = len(steps)
+    completed_count = len(completed_steps)
+    progress_percent = int((completed_count / total_steps) * 100)
+    
+    # Check if pipeline failed (has log but no final video and not currently running)
+    log_path = output_dir / "pipeline.log"
+    final_video = output_dir / "final_video.mp4"
+    
+    error = None
+    error_type = None
+    status = "pending"  # Initialize status
+    
+    # Priority 0: Check if final video exists (completed) - this is the most definitive check
+    # Check this FIRST before anything else - if video exists, we're done
+    if output_dir.exists() and final_video.exists():
+        status = "completed"
+        return {
+            "current_step": None,
+            "completed_steps": completed_steps,
+            "progress_percent": 100,
+            "status": "completed",
+            "total_steps": total_steps,
+        }
+    
+    # Check Celery task status for error information FIRST (most reliable)
+    # Method 1: Try to get task status directly from Celery's result backend
+    task_result = None
+    pmid = output_dir.name
+    task_id_file = output_dir / "task_id.txt"
+    
+    # Try to get task status from Celery result backend first (most reliable)
+    if task_id_file.exists():
+        try:
+            with open(task_id_file, "r") as f:
+                task_id = f.read().strip()
+            if task_id:
+                async_result = AsyncResult(task_id, app=celery_app)
+                if async_result.ready():
+                    # Task has completed (success or failure)
+                    try:
+                        result = async_result.get(timeout=1)  # Quick timeout
+                        if isinstance(result, dict):
+                            task_result = result
+                            # Ensure status is set correctly
+                            if async_result.failed():
+                                task_result["status"] = "failed"
+                            elif async_result.successful() and result.get("status") == "failed":
+                                # Task succeeded from Celery's perspective but pipeline failed
+                                task_result["status"] = "failed"
+                    except Exception as e:
+                        # If we can't get result, check if task failed
+                        if async_result.failed():
+                            try:
+                                task_result = {
+                                    "status": "failed",
+                                    "error": str(async_result.info) if async_result.info else "Task failed",
+                                    "error_type": "task_error"
+                                }
+                            except:
+                                pass
+        except Exception:
+            pass  # Fall through to file-based check
+    
+    # Method 2: Fall back to reading task_result.json file
+    if not task_result:
+        task_result = get_task_status(pmid)
+    
+    # Priority 1: Check task result FIRST (most reliable source of truth)
+    # This should be checked before anything else to catch failures immediately
+    if task_result:
+        task_status = task_result.get("status")
+        if task_status == "failed":
+            status = "failed"
+            error = task_result.get("error")
+            error_type = task_result.get("error_type")
+            # Don't check anything else - task result is definitive
+        elif task_status == "completed":
+            # Verify final video exists to confirm completion
+            if final_video.exists():
+                status = "completed"
+            else:
+                # Task says completed but video doesn't exist - might still be processing
+                status = "running"
+        elif task_status == "running":
+            # Task says running, but check log for failure indicators (task might have failed but not updated status yet)
+            if log_path.exists():
+                try:
+                    with open(log_path, "rb") as f:
+                        f.seek(max(0, f.tell() - 8192))
+                        log_content = f.read().decode(errors="replace")
+                        # Check for various failure indicators in log
+                        log_lower = log_content.lower()
+                        if ("pipeline failed" in log_lower or 
+                            ("✗" in log_content and "failed" in log_lower) or
+                            "http error" in log_lower or
+                            "bad request" in log_lower or
+                            "step 'fetch-paper' failed" in log_lower):
+                            # Log shows failure even though task says running - trust the log
+                            status = "failed"
+                            # Extract error from log
+                            lines = log_content.split("\n")
+                            for line in reversed(lines):
+                                if (("✗" in line or "failed" in line.lower() or "error" in line.lower()) and 
+                                    line.strip() and 
+                                    not line.strip().startswith("2025-")):  # Skip timestamp-only lines
+                                    if not error:
+                                        error = line.strip()
+                                    break
+                            if not error_type and error:
+                                error_lower = error.lower()
+                                if "not available in pubmed central" in error_lower:
+                                    error_type = "paper_not_found"
+                                elif "http error 400" in error_lower or "bad request" in error_lower:
+                                    error_type = "pipeline_error"
+                                elif "http error 400" in error_lower or "bad request" in error_lower:
+                                    error_type = "pipeline_error"
+                except:
+                    pass
+            if status != "failed":
+                status = "running"
+        else:
+            # Task result exists but status is unclear, check other indicators
+            if current_step:
+                status = "running"
+            elif log_path.exists():
+                # Check log for failure indicators first
+                try:
+                    with open(log_path, "rb") as f:
+                        f.seek(max(0, f.tell() - 8192))
+                        log_content = f.read().decode(errors="replace")
+                        if "pipeline failed" in log_content.lower() or ("✗" in log_content and "failed" in log_content.lower()):
+                            status = "failed"
+                            # Extract error
+                            lines = log_content.split("\n")
+                            for line in reversed(lines):
+                                if ("✗" in line or "failed" in line.lower()) and line.strip():
+                                    if not error:
+                                        error = line.strip()
+                                    break
+                except:
+                    pass
+                
+                # If still not failed, check timestamp
+                if status != "failed":
+                    try:
+                        import time
+                        mtime = log_path.stat().st_mtime
+                        if time.time() - mtime < 120:  # Recent activity
+                            status = "running"
+                        else:
+                            status = "failed"
+                            error = task_result.get("error")
+                            error_type = task_result.get("error_type")
+                    except:
+                        status = "running"
+            else:
+                status = "pending"
+    # Priority 2: Check if final video exists (completed)
+    elif final_video.exists():
+        status = "completed"
+    # Priority 3: Check if log exists and determine if still running or failed
+    elif log_path.exists():
+        try:
+            import time
+            mtime = log_path.stat().st_mtime
+            time_since_update = time.time() - mtime
+            
+            # Check log content for failure indicators first
+            log_has_error = False
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(max(0, f.tell() - 8192))
+                    log_content = f.read().decode(errors="replace")
+                    # Check for explicit failure messages
+                    log_lower = log_content.lower()
+                    if ("pipeline failed" in log_lower or 
+                        "✗" in log_content or
+                        "http error" in log_lower or
+                        "bad request" in log_lower or
+                        "step 'fetch-paper' failed" in log_lower):
+                        log_has_error = True
+                        # Extract error message
+                        lines = log_content.split("\n")
+                        for line in reversed(lines):
+                            if (("✗" in line or "failed" in line.lower() or "error" in line.lower()) and 
+                                line.strip() and
+                                not line.strip().startswith("2025-")):  # Skip timestamp-only lines
+                                if not error:  # Only set if we don't already have error from task_result
+                                    error = line.strip()
+                                    # Classify error type
+                                    if "not available in pubmed central" in line.lower():
+                                        error_type = "paper_not_found"
+                                    elif "http error 400" in line.lower() or "bad request" in line.lower():
+                                        error_type = "pipeline_error"
+                                break
+            except:
+                pass
+            
+            # If log was updated recently (within 2 minutes)
+            if time_since_update < 120:
+                # But if log shows an error, it's failed (even if recent)
+                if log_has_error:
+                    status = "failed"
+                    if not error_type and error:
+                        # Classify error if we haven't already
+                        error_lower = error.lower()
+                        if "not available in pubmed central" in error_lower:
+                            error_type = "paper_not_found"
+                        elif "api key" in error_lower:
+                            error_type = "api_key_error"
+                elif current_step:
+                    status = "running"
+                else:
+                    status = "pending"
+            else:
+                # Log hasn't been updated in 2+ minutes and no final video = likely failed
+                status = "failed"
+                # Use error from log if we found one
+                if not error and log_has_error:
+                    # Try to extract error from log again
+                    try:
+                        with open(log_path, "rb") as f:
+                            f.seek(max(0, f.tell() - 8192))
+                            log_content = f.read().decode(errors="replace")
+                            lines = log_content.split("\n")
+                            for line in reversed(lines):
+                                if ("✗" in line or "failed" in line.lower()) and line.strip():
+                                    error = line.strip()
+                                    break
+                    except:
+                        pass
+        except Exception:
+            # If we can't check log, default based on current step
+            status = "running" if current_step else "pending"
+    # Priority 4: If there's a current step, it's running
+    elif current_step:
+        status = "running"
+    # Priority 5: Otherwise pending
+    else:
+        status = "pending"
+    
+    result = {
+        "current_step": current_step,
+        "completed_steps": completed_steps,
+        "progress_percent": progress_percent,
+        "status": status,
+        "total_steps": total_steps,
+    }
+    
+    # Add error information if available
+    if error:
+        result["error"] = error
+    if error_type:
+        result["error_type"] = error_type
+    
+    return result
 
-    def runner():
-        output_dir.mkdir(parents=True, exist_ok=True)
-        log_path = output_dir / "pipeline.log"
 
-        # Use the same Python interpreter
-        python_exe = sys.executable
-        script_path = Path(settings.BASE_DIR) / "kyle-code" / "main.py"
+def _start_pipeline_async(pmid: str, output_dir: Path):
+    """Start the kyle-code pipeline using Celery task queue.
 
-        cmd = [python_exe, str(script_path), "generate-video", pmid, str(output_dir)]
-
-        env = os.environ.copy()
-
-        # Ensure output is written to a log file
-        with open(log_path, "ab") as out:
-            process = subprocess.Popen(cmd, stdout=out, stderr=out, env=env)
-            process.wait()
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
+    This uses Celery to run the pipeline asynchronously, which allows
+    tasks to survive server restarts and provides better error handling.
+    """
+    # Start Celery task
+    task = generate_video_task.delay(pmid, str(output_dir))
+    
+    # Store task ID in a file so we can check status via Celery's result backend
+    task_id_file = output_dir / "task_id.txt"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(task_id_file, "w") as f:
+        f.write(task.id)
+    
+    # Task is now queued and will be processed by a Celery worker
+    # Status can be checked via the task ID (Celery result backend) or by reading the task_result.json file
 
 
 @login_required
@@ -107,6 +443,17 @@ def upload_paper(request):
     if request.method == "POST":
         form = PaperUploadForm(request.POST, request.FILES)
         if form.is_valid():
+            # Validate access code
+            access_code = form.cleaned_data.get("access_code", "")
+            try:
+                if not _validate_access_code(access_code):
+                    form.add_error("access_code", "Invalid access code. Please check and try again.")
+                    return render(request, "upload.html", {"form": form})
+            except ValueError as e:
+                # Server misconfiguration - access code not set
+                form.add_error(None, f"Server configuration error: {e}")
+                return render(request, "upload.html", {"form": form})
+            
             pmid = form.cleaned_data.get("paper_id")
             # If a file is uploaded we save it and use a folder named by filename
             uploaded = form.cleaned_data.get("file")
@@ -149,8 +496,24 @@ def pipeline_status(request, pmid: str):
     final_video = output_dir / "final_video.mp4"
     log_path = output_dir / "pipeline.log"
 
+    # Get progress with error handling
+    try:
+        progress = _get_pipeline_progress(output_dir)
+    except Exception as e:
+        # Fallback progress dict if _get_pipeline_progress fails
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.exception(f"Error getting pipeline progress for {pmid}: {e}")
+        progress = {
+            "status": "pending",
+            "current_step": None,
+            "completed_steps": [],
+            "progress_percent": 0,
+            "total_steps": 5,
+        }
+
     if request.GET.get("_json"):
-        # JSON status endpoint
+        # JSON status endpoint - use the new progress tracking
         status = {
             "pmid": pmid,
             "exists": output_dir.exists(),
@@ -158,7 +521,20 @@ def pipeline_status(request, pmid: str):
             "final_video_url": (
                 f"{settings.MEDIA_URL}{pmid}/final_video.mp4" if final_video.exists() else None
             ),
+            "status": progress.get("status", "pending"),
+            "current_step": progress.get("current_step"),
+            "completed_steps": progress.get("completed_steps", []),
+            "progress_percent": progress.get("progress_percent", 0),
         }
+        
+        # Add error information if available
+        if "error" in progress:
+            status["error"] = progress["error"]
+        if "error_type" in progress:
+            status["error_type"] = progress["error_type"]
+            # Add user-friendly error message
+            status["error_message"] = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
+        
         # include tail of log if present
         if log_path.exists():
             try:
@@ -180,12 +556,26 @@ def pipeline_status(request, pmid: str):
                 log_tail = f.read().decode(errors="replace")
         except Exception:
             log_tail = "(could not read log)"
+    
+    # Get user-friendly error message
+    error_message = None
+    if progress.get("error_type"):
+        error_message = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
 
+    # Use dedicated video endpoint if video exists, otherwise use media URL
+    if final_video.exists():
+        from django.urls import reverse
+        final_video_url = reverse("serve_video", args=[pmid])
+    else:
+        final_video_url = f"{settings.MEDIA_URL}{pmid}/final_video.mp4"
+    
     context = {
         "pmid": pmid,
         "final_video_exists": final_video.exists(),
-        "final_video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4",
+        "final_video_url": final_video_url,
         "log_tail": log_tail,
+        "progress": progress,
+        "error_message": error_message,
     }
 
     return render(request, "status.html", context)
@@ -195,9 +585,33 @@ def pipeline_result(request, pmid: str):
     output_dir = Path(settings.MEDIA_ROOT) / pmid
     final_video = output_dir / "final_video.mp4"
     if final_video.exists():
-        return render(request, "result.html", {"pmid": pmid, "video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4"})
+        # Use dedicated video endpoint
+        video_url = reverse("serve_video", args=[pmid])
+        return render(request, "result.html", {"pmid": pmid, "video_url": video_url})
     else:
         return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
+
+
+@login_required
+def serve_video(request, pmid: str):
+    """Serve video file directly with proper headers."""
+    output_dir = Path(settings.MEDIA_ROOT) / pmid
+    final_video = output_dir / "final_video.mp4"
+    
+    if not final_video.exists():
+        return HttpResponse("Video not found", status=404)
+    
+    try:
+        with open(final_video, 'rb') as f:
+            response = HttpResponse(f.read(), content_type='video/mp4')
+            response['Content-Disposition'] = f'inline; filename="final_video.mp4"'
+            response['Content-Length'] = final_video.stat().st_size
+            return response
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error serving video for {pmid}: {e}")
+        return HttpResponse("Error serving video", status=500)
 
 
 def register(request):
@@ -211,3 +625,215 @@ def register(request):
     else:
         form = UserCreationForm()
     return render(request, "registration/register.html", {"form": form})
+
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
+@require_http_methods(["POST"])
+@csrf_exempt  # For API usage, you may want to use proper API authentication instead
+def api_start_generation(request):
+    """API endpoint to start video generation from a PubMed ID.
+    
+    POST /api/generate/
+    Body (JSON):
+    {
+        "paper_id": "PMC10979640",  # or PMID like "33963468"
+        "access_code": "your-access-code"  # Required access code
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "paper_id": "PMC10979640",
+        "status_url": "/api/status/PMC10979640/",
+        "message": "Pipeline started"
+    }
+    """
+    try:
+        if request.content_type == 'application/json':
+            import json
+            data = json.loads(request.body)
+            paper_id = data.get("paper_id", "").strip()
+            access_code = data.get("access_code", "").strip()
+        else:
+            paper_id = request.POST.get("paper_id", "").strip()
+            access_code = request.POST.get("access_code", "").strip()
+        
+        if not paper_id:
+            return JsonResponse(
+                {"success": False, "error": "paper_id is required"},
+                status=400
+            )
+        
+        # Validate access code
+        try:
+            if not _validate_access_code(access_code):
+                return JsonResponse(
+                    {"success": False, "error": "Invalid or missing access_code"},
+                    status=403  # Forbidden
+                )
+        except ValueError as e:
+            # Server misconfiguration - access code not set
+            return JsonResponse(
+                {"success": False, "error": f"Server configuration error: {str(e)}"},
+                status=500  # Internal Server Error
+            )
+        
+        # Validate API keys are set
+        if not os.getenv("GEMINI_API_KEY"):
+            return JsonResponse(
+                {"success": False, "error": "GEMINI_API_KEY environment variable not set"},
+                status=500
+            )
+        
+        if not os.getenv("RUNWAYML_API_SECRET"):
+            return JsonResponse(
+                {"success": False, "error": "RUNWAYML_API_SECRET environment variable not set"},
+                status=500
+            )
+        
+        # Start pipeline
+        output_dir = Path(settings.MEDIA_ROOT) / paper_id
+        
+        # Check if already running or completed
+        progress = _get_pipeline_progress(output_dir)
+        if progress["status"] == "running":
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": "Pipeline already running for this paper_id",
+                    "status_url": f"/api/status/{paper_id}/"
+                },
+                status=409  # Conflict
+            )
+        
+        # Don't restart if already completed
+        if progress["status"] == "completed":
+            return JsonResponse(
+                {
+                    "success": True,
+                    "paper_id": paper_id,
+                    "status_url": f"/api/status/{paper_id}/",
+                    "result_url": f"/api/result/{paper_id}/",
+                    "message": "Video already generated"
+                }
+            )
+        
+        # Start the pipeline
+        _start_pipeline_async(paper_id, output_dir)
+        
+        return JsonResponse({
+            "success": True,
+            "paper_id": paper_id,
+            "status_url": f"/api/status/{paper_id}/",
+            "result_url": f"/api/result/{paper_id}/",
+            "message": "Pipeline started successfully"
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse(
+            {"success": False, "error": "Invalid JSON in request body"},
+            status=400
+        )
+    except Exception as e:
+        return JsonResponse(
+            {"success": False, "error": str(e)},
+            status=500
+        )
+
+
+@require_http_methods(["GET"])
+def api_status(request, paper_id: str):
+    """API endpoint to check pipeline status.
+    
+    GET /api/status/<paper_id>/
+    
+    Returns:
+    {
+        "paper_id": "PMC10979640",
+        "status": "running",  # pending, running, completed, failed
+        "current_step": "generate-videos",
+        "completed_steps": ["fetch-paper", "generate-script", "generate-audio"],
+        "progress_percent": 60,
+        "final_video_url": "/media/PMC10979640/final_video.mp4" or null,
+        "log_tail": "last 8KB of log file"
+    }
+    """
+    output_dir = Path(settings.MEDIA_ROOT) / paper_id
+    progress = _get_pipeline_progress(output_dir)
+    
+    final_video = output_dir / "final_video.mp4"
+    final_video_url = None
+    if final_video.exists():
+        final_video_url = f"{settings.MEDIA_URL}{paper_id}/final_video.mp4"
+    
+    # Get log tail
+    log_path = output_dir / "pipeline.log"
+    log_tail = ""
+    if log_path.exists():
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(max(0, f.tell() - 8192))
+                log_tail = f.read().decode(errors="replace")
+        except Exception:
+            log_tail = "(could not read log)"
+    
+    response = {
+        "paper_id": paper_id,
+        "status": progress["status"],
+        "current_step": progress["current_step"],
+        "completed_steps": progress["completed_steps"],
+        "progress_percent": progress["progress_percent"],
+        "final_video_url": final_video_url,
+        "log_tail": log_tail,
+    }
+    
+    return JsonResponse(response)
+
+
+@require_http_methods(["GET"])
+def api_result(request, paper_id: str):
+    """API endpoint to get the final video result.
+    
+    GET /api/result/<paper_id>/
+    
+    Returns:
+    {
+        "paper_id": "PMC10979640",
+        "success": true,
+        "video_url": "/media/PMC10979640/final_video.mp4",
+        "status": "completed"
+    }
+    or
+    {
+        "paper_id": "PMC10979640",
+        "success": false,
+        "error": "Video not ready yet",
+        "status": "running",
+        "status_url": "/api/status/PMC10979640/"
+    }
+    """
+    output_dir = Path(settings.MEDIA_ROOT) / paper_id
+    final_video = output_dir / "final_video.mp4"
+    
+    progress = _get_pipeline_progress(output_dir)
+    
+    if final_video.exists():
+        return JsonResponse({
+            "paper_id": paper_id,
+            "success": True,
+            "video_url": f"{settings.MEDIA_URL}{paper_id}/final_video.mp4",
+            "status": "completed",
+            "progress_percent": 100,
+        })
+    else:
+        return JsonResponse({
+            "paper_id": paper_id,
+            "success": False,
+            "error": "Video not ready yet",
+            "status": progress["status"],
+            "progress_percent": progress["progress_percent"],
+            "status_url": f"/api/status/{paper_id}/",
+        }, status=202)  # Accepted but not ready

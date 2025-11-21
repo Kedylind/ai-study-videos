@@ -16,6 +16,13 @@ class PaperUploadForm(forms.Form):
         help_text="Optional: upload a PDF or text file instead of using PubMed",
     )
 
+    access_code = forms.CharField(
+        required=True,
+        label="Access Code",
+        help_text="Enter the access code to generate videos",
+        widget=forms.PasswordInput(attrs={"placeholder": "Enter access code"}),
+    )
+
     def clean(self):
         cleaned = super().clean()
         if not cleaned.get("paper_id") and not cleaned.get("file"):
