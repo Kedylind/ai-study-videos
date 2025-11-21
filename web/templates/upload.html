@@ -116,6 +116,29 @@
                         {% endif %}
                     </div>
 
+                    <!-- Access Code Input -->
+                    <div class="form-group">
+                        <label for="{{ form.access_code.id_for_label }}">{{ form.access_code.label }}</label>
+                        {{ form.access_code }}
+                        {% if form.access_code.help_text %}
+                            <p class="help-text">{{ form.access_code.help_text|safe }}</p>
+                        {% endif %}
+                        {% if form.access_code.errors %}
+                            <div class="alert alert-error">
+                                {% for error in form.access_code.errors %}
+                                    {{ error }}
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                        {% if form.non_field_errors %}
+                            <div class="alert alert-error">
+                                {% for error in form.non_field_errors %}
+                                    {{ error }}
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    </div>
+
                     <!-- Buttons -->
                     <div class="button-group">
                         <button type="submit" class="btn btn-primary">Generate Video</button>
