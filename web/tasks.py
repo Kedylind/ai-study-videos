@@ -176,13 +176,15 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
             
             logger.error(f"Video generation failed for {pmid}: {error_message}")
             
-            # Update task state with error
+            # Update task state with error (use PROGRESS state, not FAILURE, to avoid serialization issues)
+            # We'll return the failed result instead of raising an exception
             self.update_state(
-                state="FAILURE",
+                state="PROGRESS",
                 meta={
                     "pmid": pmid,
                     "error": error_message,
                     "error_type": error_type,
+                    "status": "failed",
                 }
             )
     
@@ -202,14 +204,15 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         
         logger.exception(f"Unexpected error in video generation task for {pmid}")
         
-        # Update task state
+        # Update task state (use PROGRESS instead of FAILURE to avoid serialization issues)
         try:
             self.update_state(
-                state="FAILURE",
+                state="PROGRESS",
                 meta={
                     "pmid": pmid,
                     "error": error_message,
                     "error_type": "task_error",
+                    "status": "failed",
                 }
             )
         except Exception as state_error:
