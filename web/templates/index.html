@@ -7,14 +7,18 @@
 {% block content %}
   {% if user.is_authenticated %}
     <div class="welcome-message">
-      <p>Ready to generate AI videos from research papers. Upload a paper to get started!</p>
+      <p>🚀 Ready to transform research papers into engaging AI videos. Upload a paper to get started!</p>
     </div>
     <div class="button-group button-group-center">
-      <a href="/upload/" class="btn-primary">Generate an AI video from a paper</a>
+      <a href="/upload/" class="btn-primary">Generate AI Video from Paper</a>
     </div>
   {% else %}
     <div class="welcome-message">
-      <p>Transform research papers into engaging AI-generated videos. Please login or register to get started.</p>
+      <p>🔬 Transform research papers into engaging AI-generated videos. Please login or register to get started.</p>
+    </div>
+    <div class="button-group button-group-center">
+      <a href="{% url 'login' %}" class="btn-primary">Login</a>
+      <a href="{% url 'register' %}" class="btn-secondary">Register</a>
     </div>
   {% endif %}
 {% endblock %}
