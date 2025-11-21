@@ -578,9 +578,33 @@ def pipeline_result(request, pmid: str):
     output_dir = Path(settings.MEDIA_ROOT) / pmid
     final_video = output_dir / "final_video.mp4"
     if final_video.exists():
-        return render(request, "result.html", {"pmid": pmid, "video_url": f"{settings.MEDIA_URL}{pmid}/final_video.mp4"})
+        # Use absolute URL for video
+        video_url = f"{settings.MEDIA_URL}{pmid}/final_video.mp4"
+        return render(request, "result.html", {"pmid": pmid, "video_url": video_url})
     else:
         return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
+
+
+@login_required
+def serve_video(request, pmid: str):
+    """Serve video file directly with proper headers."""
+    output_dir = Path(settings.MEDIA_ROOT) / pmid
+    final_video = output_dir / "final_video.mp4"
+    
+    if not final_video.exists():
+        return HttpResponse("Video not found", status=404)
+    
+    try:
+        with open(final_video, 'rb') as f:
+            response = HttpResponse(f.read(), content_type='video/mp4')
+            response['Content-Disposition'] = f'inline; filename="final_video.mp4"'
+            response['Content-Length'] = final_video.stat().st_size
+            return response
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error serving video for {pmid}: {e}")
+        return HttpResponse("Error serving video", status=500)
 
 
 def register(request):

@@ -1,9 +1,8 @@
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.static import serve
-from django.urls import re_path
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -18,5 +17,8 @@ else:
     # In production, serve media files through Django (for Railway)
     # Note: For large-scale deployments, consider using a CDN or object storage
     urlpatterns += [
-        re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
+        re_path(r'^media/(?P<path>.*)$', serve, {
+            'document_root': settings.MEDIA_ROOT,
+            'show_indexes': False,
+        }),
     ]
