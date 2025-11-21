@@ -5,62 +5,197 @@
 {% block header_title %}Pipeline Status{% endblock %}
 
 {% block content %}
-  <p>Tracking the generation process for paper <strong>{{ pmid }}</strong>.</p>
+  <p>Tracking the generation process for paper <strong id="pmid-display">{{ pmid }}</strong>.</p>
 
-  {% if final_video_exists %}
-    <div class="alert alert-info">
-      <p><strong>Final video ready!</strong></p>
-      <div class="button-group">
-        <a href="{{ final_video_url }}" class="btn-primary">Download/Play</a>
-        <a href="/result/{{ pmid }}" class="btn-secondary">Open result page</a>
+  <!-- Status Alert Container (will be updated by JavaScript) -->
+  <div id="status-alert-container">
+    {% if final_video_exists %}
+      <div class="alert alert-info">
+        <p><strong>Final video ready!</strong></p>
+        <div class="button-group">
+          <a href="{{ final_video_url }}" class="btn-primary">Download/Play</a>
+          <a href="/result/{{ pmid }}" class="btn-secondary">Open result page</a>
+        </div>
       </div>
-    </div>
-  {% elif progress.status == "failed" %}
-    <div class="alert alert-error" style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
-      <p><strong>❌ Video generation failed</strong></p>
-      {% if error_message %}
-        <p style="color: #c00; font-weight: 500;">{{ error_message }}</p>
-      {% elif progress.error %}
-        <p style="color: #c00; font-weight: 500;">{{ progress.error }}</p>
-      {% elif progress.error_type %}
-        <p style="color: #c00; font-weight: 500;">An error occurred: {{ progress.error_type }}</p>
-      {% else %}
-        <p style="color: #c00; font-weight: 500;">An error occurred during video generation. Please check the log below for details.</p>
-      {% endif %}
-    </div>
-  {% else %}
-    <div class="alert alert-info">
-      <p>Pipeline is running or queued. Refresh this page to update status.</p>
-    </div>
-  {% endif %}
-
-  <!-- Progress Information -->
-  <h2>Progress</h2>
-  <div style="margin: 1em 0;">
-    <div style="background-color: #f0f0f0; border-radius: 4px; padding: 2px; margin-bottom: 0.5em;">
-      <div style="background-color: #4CAF50; height: 24px; border-radius: 4px; width: {{ progress.progress_percent }}%; transition: width 0.3s;"></div>
-    </div>
-    <p><strong>{{ progress.progress_percent }}%</strong> complete ({{ progress.completed_steps|length }} of {{ progress.total_steps }} steps)</p>
-    
-    {% if progress.current_step %}
-      <p><strong>Current step:</strong> {{ progress.current_step }}</p>
-    {% endif %}
-    
-    {% if progress.completed_steps %}
-      <p><strong>Completed steps:</strong></p>
-      <ul>
-        {% for step in progress.completed_steps %}
-          <li>✓ {{ step }}</li>
-        {% endfor %}
-      </ul>
+    {% elif progress.status == "failed" %}
+      <div class="alert alert-error" style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
+        <p><strong>❌ Video generation failed</strong></p>
+        {% if error_message %}
+          <p style="color: #c00; font-weight: 500;">{{ error_message }}</p>
+        {% elif progress.error %}
+          <p style="color: #c00; font-weight: 500;">{{ progress.error }}</p>
+        {% elif progress.error_type %}
+          <p style="color: #c00; font-weight: 500;">An error occurred: {{ progress.error_type }}</p>
+        {% else %}
+          <p style="color: #c00; font-weight: 500;">An error occurred during video generation. Please check the log below for details.</p>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="alert alert-info">
+        <p>Pipeline is running. Status will update automatically...</p>
+      </div>
     {% endif %}
   </div>
 
+  <!-- Progress Information -->
+  <h2>Progress</h2>
+  <div id="progress-container" style="margin: 1em 0;">
+    <div style="background-color: #f0f0f0; border-radius: 4px; padding: 2px; margin-bottom: 0.5em;">
+      <div id="progress-bar" style="background-color: #4CAF50; height: 24px; border-radius: 4px; width: {{ progress.progress_percent }}%; transition: width 0.3s;"></div>
+    </div>
+    <p><strong id="progress-text">{{ progress.progress_percent }}%</strong> complete (<span id="completed-count">{{ progress.completed_steps|length }}</span> of <span id="total-steps">{{ progress.total_steps }}</span> steps)</p>
+    
+    <div id="current-step-container">
+      {% if progress.current_step %}
+        <p><strong>Current step:</strong> <span id="current-step-text">{{ progress.current_step }}</span></p>
+      {% else %}
+        <p id="current-step-text" style="display: none;"><strong>Current step:</strong> <span></span></p>
+      {% endif %}
+    </div>
+    
+    <div id="completed-steps-container">
+      {% if progress.completed_steps %}
+        <p><strong>Completed steps:</strong></p>
+        <ul id="completed-steps-list">
+          {% for step in progress.completed_steps %}
+            <li>✓ {{ step }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <ul id="completed-steps-list" style="display: none;"><strong>Completed steps:</strong></ul>
+      {% endif %}
+    </div>
+  </div>
+
   <h2>Pipeline log (tail)</h2>
-  <pre style="background-color: #f5f5f5; padding: 1em; border-radius: 4px; overflow-x: auto; max-height: 400px; overflow-y: auto;">{{ log_tail|default:"(No log available yet)" }}</pre>
+  <pre id="log-content" style="background-color: #f5f5f5; padding: 1em; border-radius: 4px; overflow-x: auto; max-height: 400px; overflow-y: auto;">{{ log_tail|default:"(No log available yet)" }}</pre>
 
   <div class="button-group">
     <a href="/upload/" class="btn-primary">Generate another video</a>
     <a href="?_json=1" class="btn-secondary" target="_blank">View JSON status</a>
   </div>
+
+  <script>
+    // Auto-refresh status page
+    const pmid = "{{ pmid }}";
+    let refreshInterval = null;
+    let isCompleted = {{ final_video_exists|yesno:"true,false" }};
+    let isFailed = {{ progress.status == "failed"|yesno:"true,false" }};
+
+    function updateStatus() {
+      fetch(`/status/${pmid}/?_json=1`)
+        .then(response => response.json())
+        .then(data => {
+          // Update progress bar
+          const progressBar = document.getElementById('progress-bar');
+          const progressText = document.getElementById('progress-text');
+          const completedCount = document.getElementById('completed-count');
+          const totalSteps = document.getElementById('total-steps');
+          
+          if (progressBar && data.progress_percent !== undefined) {
+            progressBar.style.width = data.progress_percent + '%';
+            progressText.textContent = data.progress_percent + '%';
+            completedCount.textContent = data.completed_steps ? data.completed_steps.length : 0;
+            totalSteps.textContent = data.total_steps || 5;
+          }
+
+          // Update current step
+          const currentStepText = document.getElementById('current-step-text');
+          if (currentStepText) {
+            if (data.current_step) {
+              currentStepText.style.display = 'block';
+              const span = currentStepText.querySelector('span');
+              if (span) span.textContent = data.current_step;
+            } else {
+              currentStepText.style.display = 'none';
+            }
+          }
+
+          // Update completed steps
+          const completedStepsList = document.getElementById('completed-steps-list');
+          if (completedStepsList && data.completed_steps) {
+            completedStepsList.innerHTML = '';
+            data.completed_steps.forEach(step => {
+              const li = document.createElement('li');
+              li.textContent = '✓ ' + step;
+              completedStepsList.appendChild(li);
+            });
+            if (data.completed_steps.length > 0) {
+              completedStepsList.parentElement.style.display = 'block';
+            }
+          }
+
+          // Update log
+          if (data.log_tail !== undefined) {
+            const logContent = document.getElementById('log-content');
+            if (logContent) {
+              logContent.textContent = data.log_tail || "(No log available yet)";
+            }
+          }
+
+          // Update status alert
+          const statusContainer = document.getElementById('status-alert-container');
+          if (statusContainer) {
+            if (data.status === 'completed' && data.final_video_url) {
+              statusContainer.innerHTML = `
+                <div class="alert alert-info">
+                  <p><strong>Final video ready!</strong></p>
+                  <div class="button-group">
+                    <a href="${data.final_video_url}" class="btn-primary">Download/Play</a>
+                    <a href="/result/${pmid}" class="btn-secondary">Open result page</a>
+                  </div>
+                </div>
+              `;
+              isCompleted = true;
+              stopPolling();
+            } else if (data.status === 'failed') {
+              const errorMsg = data.error_message || data.error || 'An error occurred during video generation.';
+              statusContainer.innerHTML = `
+                <div class="alert alert-error" style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
+                  <p><strong>❌ Video generation failed</strong></p>
+                  <p style="color: #c00; font-weight: 500;">${errorMsg}</p>
+                </div>
+              `;
+              isFailed = true;
+              stopPolling();
+            } else if (data.status === 'running' || data.status === 'pending') {
+              statusContainer.innerHTML = `
+                <div class="alert alert-info">
+                  <p>Pipeline is running. Status will update automatically...</p>
+                </div>
+              `;
+            }
+          }
+        })
+        .catch(error => {
+          console.error('Error fetching status:', error);
+        });
+    }
+
+    function startPolling() {
+      if (isCompleted || isFailed) {
+        return; // Don't poll if already completed or failed
+      }
+      
+      // Poll every 3 seconds
+      refreshInterval = setInterval(updateStatus, 3000);
+    }
+
+    function stopPolling() {
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
+      }
+    }
+
+    // Start polling when page loads (if not already completed/failed)
+    if (!isCompleted && !isFailed) {
+      startPolling();
+      // Also update immediately after a short delay
+      setTimeout(updateStatus, 1000);
+    }
+
+    // Clean up on page unload
+    window.addEventListener('beforeunload', stopPolling);
+  </script>
 {% endblock %}

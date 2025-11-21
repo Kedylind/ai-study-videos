@@ -189,24 +189,65 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
         elif task_status == "completed":
             status = "completed"
         elif task_status == "running":
-            status = "running"
+            # Even if task says running, check log for failure indicators
+            if log_path.exists():
+                try:
+                    with open(log_path, "rb") as f:
+                        f.seek(max(0, f.tell() - 8192))
+                        log_content = f.read().decode(errors="replace")
+                        if "pipeline failed" in log_content.lower() or ("✗" in log_content and "failed" in log_content.lower()):
+                            # Log shows failure even though task says running - trust the log
+                            status = "failed"
+                            # Extract error from log
+                            lines = log_content.split("\n")
+                            for line in reversed(lines):
+                                if ("✗" in line or "failed" in line.lower()) and line.strip():
+                                    if not error:
+                                        error = line.strip()
+                                    break
+                            if not error_type and error:
+                                error_lower = error.lower()
+                                if "not available in pubmed central" in error_lower:
+                                    error_type = "paper_not_found"
+                except:
+                    pass
+            if status != "failed":
+                status = "running"
         else:
             # Task result exists but status is unclear, check other indicators
             if current_step:
                 status = "running"
             elif log_path.exists():
-                # Check log timestamp
+                # Check log for failure indicators first
                 try:
-                    import time
-                    mtime = log_path.stat().st_mtime
-                    if time.time() - mtime < 120:  # Recent activity
-                        status = "running"
-                    else:
-                        status = "failed"
-                        error = task_result.get("error")
-                        error_type = task_result.get("error_type")
+                    with open(log_path, "rb") as f:
+                        f.seek(max(0, f.tell() - 8192))
+                        log_content = f.read().decode(errors="replace")
+                        if "pipeline failed" in log_content.lower() or ("✗" in log_content and "failed" in log_content.lower()):
+                            status = "failed"
+                            # Extract error
+                            lines = log_content.split("\n")
+                            for line in reversed(lines):
+                                if ("✗" in line or "failed" in line.lower()) and line.strip():
+                                    if not error:
+                                        error = line.strip()
+                                    break
                 except:
-                    status = "running"
+                    pass
+                
+                # If still not failed, check timestamp
+                if status != "failed":
+                    try:
+                        import time
+                        mtime = log_path.stat().st_mtime
+                        if time.time() - mtime < 120:  # Recent activity
+                            status = "running"
+                        else:
+                            status = "failed"
+                            error = task_result.get("error")
+                            error_type = task_result.get("error_type")
+                    except:
+                        status = "running"
             else:
                 status = "pending"
     # Priority 3: Check if log exists and determine if still running or failed
