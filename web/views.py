@@ -41,11 +41,11 @@ def _get_user_friendly_error(error_type: str, error_detail: str = "") -> str:
     return error_messages.get(error_type, error_messages["unknown_error"])
 
 
-def _validate_access_code(access_code: str) -> bool:
+def _validate_access_code(access_code: str | None) -> bool:
     """Validate the provided access code against the configured code.
     
     Args:
-        access_code: The access code to validate
+        access_code: The access code to validate (can be None)
         
     Returns:
         True if the access code is valid, False otherwise
@@ -53,7 +53,8 @@ def _validate_access_code(access_code: str) -> bool:
     Raises:
         ValueError: If VIDEO_ACCESS_CODE is not configured (server misconfiguration)
     """
-    expected_code = os.getenv("VIDEO_ACCESS_CODE")
+    # Get expected code from Django settings (which loads from environment variable)
+    expected_code = settings.VIDEO_ACCESS_CODE
     
     # Require access code to be configured for security
     if not expected_code:
@@ -62,12 +63,19 @@ def _validate_access_code(access_code: str) -> bool:
             "Please set VIDEO_ACCESS_CODE environment variable for security."
         )
     
-    # Require access code to be provided
-    if not access_code or not access_code.strip():
+    # Require access code to be provided and not just whitespace
+    if not access_code:
+        return False
+    
+    # Convert to string and strip whitespace
+    access_code_str = str(access_code).strip()
+    expected_code_str = str(expected_code).strip()
+    
+    if not access_code_str:
         return False
     
     # Compare codes (case-sensitive)
-    return access_code.strip() == expected_code.strip()
+    return access_code_str == expected_code_str
 
 
 def health(request):
@@ -655,11 +663,11 @@ def api_start_generation(request):
         if request.content_type == 'application/json':
             import json
             data = json.loads(request.body)
-            paper_id = data.get("paper_id", "").strip()
-            access_code = data.get("access_code", "").strip()
+            paper_id = (data.get("paper_id") or "").strip()
+            access_code = data.get("access_code") or ""
         else:
-            paper_id = request.POST.get("paper_id", "").strip()
-            access_code = request.POST.get("access_code", "").strip()
+            paper_id = (request.POST.get("paper_id") or "").strip()
+            access_code = request.POST.get("access_code") or ""
         
         if not paper_id:
             return JsonResponse(
