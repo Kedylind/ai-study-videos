@@ -1,0 +1,25 @@
+[SIMULATION MODE] Starting simulated pipeline for TEST123
+[SIMULATION MODE] Starting simulated pipeline for TEST123
+[SIMULATION MODE] Task ID: 89bec194-8a15-472e-b3cc-dc664bde4d26
+[SIMULATION MODE] This is a simulation - no actual video generation is occurring
+
+[SIMULATION] Step: Fetch Paper
+[SIMULATION] Progress: 1/5
+[SIMULATION] [OK] Fetch Paper complete
+
+[SIMULATION] Step: Generate Script
+[SIMULATION] Progress: 2/5
+[SIMULATION] [OK] Generate Script complete
+
+[SIMULATION] Step: Generate Audio
+[SIMULATION] Progress: 3/5
+[SIMULATION] [OK] Generate Audio complete
+
+[SIMULATION] Step: Generate Videos
+[SIMULATION] Progress: 4/5
+[SIMULATION] [OK] Generate Videos complete
+
+[SIMULATION] Step: Add Captions
+[SIMULATION] Progress: 5/5
+[SIMULATION] [OK] All steps complete!
+[SIMULATION MODE] Simulation finished successfully

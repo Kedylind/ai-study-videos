@@ -1,0 +1,8 @@
+{
+  "status": "failed",
+  "pmid": "TEST345",
+  "output_dir": "C:\\Users\\david\\OneDrive\\Desktop\\Cursor Projects\\Hidden-Hill\\media\\TEST345",
+  "task_id": "f15e3016-0384-469b-8528-4b36b34b63f7",
+  "error": "Simulation error: 'charmap' codec can't encode character '\\u2713' in position 13: character maps to <undefined>",
+  "error_type": "task_error"
+}

@@ -16,14 +16,14 @@ $env:RUNWAYML_API_SECRET = "your-runway-api-key"
 ```powershell
 cd "C:\Users\david\OneDrive\Desktop\Cursor Projects\Hidden-Hill"
 .\venv\Scripts\activate.ps1
-cd kyle-code
+cd pipeline
 python main.py generate-video PMC10979640 tmp/PMC10979640
 ```
 
 ### Using the test script:
 
 ```powershell
-cd kyle-code
+cd pipeline
 .\test_video_generation.ps1 -PaperId PMC10979640 -OutputDir tmp/PMC10979640
 ```
 

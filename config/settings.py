@@ -54,8 +54,9 @@ except ImportError:
 # ============================================================================
 
 # Debug Mode
-# Default to False for production safety - explicitly set DEBUG=True for local development
-DEBUG = os.getenv("DEBUG", "False") == "True"
+# Default to True for local development, False for production
+# Can be overridden with DEBUG environment variable
+DEBUG = os.getenv("DEBUG", "True") == "True"
 
 # Django Secret Key
 # Generate with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
@@ -79,6 +80,12 @@ if not DEBUG and SECRET_KEY == "dev-secret-not-for-production":
 # Generate a strong code: python -c "import secrets; print(secrets.token_urlsafe(32))"
 VIDEO_ACCESS_CODE = os.getenv("VIDEO_ACCESS_CODE", None)
 
+# Simulation Mode
+# When enabled, video generation tasks will simulate progress instead of running the actual pipeline
+# This is useful for testing the status update system without incurring API costs
+# Set SIMULATION_MODE=True in your .env file or environment to enable
+SIMULATION_MODE = os.getenv("SIMULATION_MODE", "False") == "True"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -91,7 +98,6 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -99,6 +105,11 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# Only use WhiteNoise in production (DEBUG=False)
+# In development, Django's staticfiles app handles static files automatically
+if not DEBUG:
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [
@@ -129,7 +140,9 @@ DATABASES = {
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 # Use CompressedStaticFilesStorage (not Manifest) for simpler deployment
-STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
+# Only use WhiteNoise storage in production; in development, use default storage
+if not DEBUG:
+    STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 
 # Media files for generated outputs (videos, audio, metadata)
 MEDIA_URL = "/media/"

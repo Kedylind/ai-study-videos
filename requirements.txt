@@ -6,7 +6,7 @@ psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 celery==5.3.6
 redis==5.0.1
-# kyle-code dependencies
+# pipeline dependencies
 click>=8.3.0
 google-cloud-texttospeech>=2.33.0
 google-genai>=1.48.0

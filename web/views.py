@@ -1,8 +1,14 @@
 import os
+import logging
 from pathlib import Path
 from typing import Dict, Optional
+import urllib.request
+import urllib.error
+import xml.etree.ElementTree as ET
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
@@ -13,7 +19,7 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
-from .tasks import generate_video_task, get_task_status
+from .tasks import generate_video_task, get_task_status, update_job_progress_from_files
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -78,6 +84,94 @@ def _validate_access_code(access_code: str | None) -> bool:
     return access_code_str == expected_code_str
 
 
+def _validate_paper_id(paper_id: str) -> tuple[bool, str]:
+    """
+    Validate that a paper ID (PMID or PMCID) exists and is available in PubMed Central.
+    
+    Args:
+        paper_id: PubMed ID (e.g., "12345678") or PMC ID (e.g., "PMC10979640")
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+        - is_valid: True if paper exists and is in PMC, False otherwise
+        - error_message: Error message if invalid, empty string if valid
+    """
+    paper_id = paper_id.strip()
+    
+    if not paper_id:
+        return False, "Please provide a PubMed ID or PMC ID."
+    
+    try:
+        # Determine if input is PMID or PMCID
+        if paper_id.upper().startswith("PMC"):
+            # It's a PMCID - try to fetch it directly
+            pmcid = paper_id.upper()
+            pmc_number = pmcid.replace("PMC", "")
+            url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id={pmc_number}&retmode=xml"
+            
+            try:
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    xml_data = response.read()
+                    # Check if we got valid XML (not an error)
+                    root = ET.fromstring(xml_data)
+                    # If we can parse it and it has content, it's valid
+                    if root is not None:
+                        return True, ""
+            except urllib.error.HTTPError as e:
+                if e.code == 400 or e.code == 404:
+                    return False, f"PMC ID '{paper_id}' not found in PubMed Central. Please check the ID and ensure the paper is open-access."
+                return False, f"Error checking PMC ID: {e}"
+            except ET.ParseError:
+                return False, f"PMC ID '{paper_id}' not found or not available in PubMed Central."
+            except Exception as e:
+                return False, f"Error validating PMC ID: {str(e)}"
+        else:
+            # It's a PMID - look up the PMCID
+            url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id={paper_id}&retmode=xml"
+            
+            try:
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    xml_data = response.read()
+                    root = ET.fromstring(xml_data)
+                    
+                    # Look for PMC ID in ArticleIdList
+                    pmcid = None
+                    for article_id in root.findall(".//ArticleId"):
+                        if article_id.get("IdType") == "pmc":
+                            pmc_id = article_id.text
+                            if not pmc_id.startswith("PMC"):
+                                pmc_id = f"PMC{pmc_id}"
+                            pmcid = pmc_id
+                            break
+                    
+                    if not pmcid:
+                        return False, f"PubMed ID '{paper_id}' is not available in PubMed Central. This tool only works with open-access papers in PMC."
+                    
+                    # Verify the PMCID is accessible
+                    pmc_number = pmcid.replace("PMC", "")
+                    pmc_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id={pmc_number}&retmode=xml"
+                    
+                    try:
+                        with urllib.request.urlopen(pmc_url, timeout=10) as pmc_response:
+                            pmc_xml = pmc_response.read()
+                            ET.fromstring(pmc_xml)  # Verify it's valid XML
+                            return True, ""
+                    except urllib.error.HTTPError:
+                        return False, f"PubMed ID '{paper_id}' is not available in PubMed Central. This tool only works with open-access papers in PMC."
+                    except Exception:
+                        return False, f"PubMed ID '{paper_id}' is not available in PubMed Central. This tool only works with open-access papers in PMC."
+            except urllib.error.HTTPError as e:
+                if e.code == 400 or e.code == 404:
+                    return False, f"PubMed ID '{paper_id}' not found. Please check the ID and try again."
+                return False, f"Error checking PubMed ID: {e}"
+            except ET.ParseError:
+                return False, f"PubMed ID '{paper_id}' not found or invalid."
+            except Exception as e:
+                return False, f"Error validating PubMed ID: {str(e)}"
+    except Exception as e:
+        return False, f"Error validating paper ID: {str(e)}"
+
+
 def health(request):
     return JsonResponse({"status": "ok"})
 
@@ -134,6 +228,24 @@ def static_debug(request):
 def home(request):
     # Render the beautiful landing page
     return render(request, "landing.html")
+
+
+def _get_completed_steps_from_progress(progress_percent: int) -> list:
+    """Convert progress percent to list of completed step names."""
+    steps = [
+        ("fetch-paper", 20),
+        ("generate-script", 40),
+        ("generate-audio", 60),
+        ("generate-videos", 80),
+        ("add-captions", 100),
+    ]
+    
+    completed_steps = []
+    for step_name, step_percent in steps:
+        if progress_percent >= step_percent:
+            completed_steps.append(step_name)
+    
+    return completed_steps
 
 
 def _get_pipeline_progress(output_dir: Path) -> Dict:
@@ -426,20 +538,53 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     return result
 
 
-def _start_pipeline_async(pmid: str, output_dir: Path):
-    """Start the kyle-code pipeline using Celery task queue.
+def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = None):
+    """Start the video generation pipeline using Celery task queue.
 
     This uses Celery to run the pipeline asynchronously, which allows
     tasks to survive server restarts and provides better error handling.
+    
+    Args:
+        pmid: PubMed ID or paper identifier
+        output_dir: Output directory path
+        user_id: Optional user ID to associate with the job
     """
     # Start Celery task
-    task = generate_video_task.delay(pmid, str(output_dir))
+    task = generate_video_task.delay(pmid, str(output_dir), user_id)
     
     # Store task ID in a file so we can check status via Celery's result backend
     task_id_file = output_dir / "task_id.txt"
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(task_id_file, "w") as f:
         f.write(task.id)
+    
+    # Create or update database job record
+    if user_id:
+        try:
+            from django.contrib.auth.models import User
+            from web.models import VideoGenerationJob
+            try:
+                user = User.objects.get(pk=user_id)
+                job, created = VideoGenerationJob.objects.get_or_create(
+                    task_id=task.id,
+                    defaults={
+                        'user': user,
+                        'paper_id': pmid,
+                        'status': 'pending',
+                        'progress_percent': 0,
+                    }
+                )
+                if not created:
+                    # Update existing job
+                    job.status = 'pending'
+                    job.progress_percent = 0
+                    job.save(update_fields=['status', 'progress_percent', 'updated_at'])
+            except User.DoesNotExist:
+                pass  # User doesn't exist, skip database tracking
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to create job record: {e}")
     
     # Task is now queued and will be processed by a Celery worker
     # Status can be checked via the task ID (Celery result backend) or by reading the task_result.json file
@@ -486,10 +631,22 @@ def upload_paper(request):
 
                 # Normalize pmid
                 pmid = pmid.strip()
+                
+                # Skip validation for test IDs in simulation mode (e.g., TEST123, TEST456)
+                # This allows testing the upload flow without validating against PubMed
+                if settings.SIMULATION_MODE and pmid.upper().startswith("TEST"):
+                    logger.info(f"Simulation mode: Skipping paper ID validation for test ID: {pmid}")
+                else:
+                    # Validate paper ID before starting pipeline
+                    is_valid, error_message = _validate_paper_id(pmid)
+                    if not is_valid:
+                        form.add_error("paper_id", error_message)
+                        return render(request, "upload.html", {"form": form})
 
             # Start pipeline asynchronously and redirect to status page
             output_dir = Path(settings.MEDIA_ROOT) / pmid
-            _start_pipeline_async(pmid, output_dir)
+            user_id = request.user.id if request.user.is_authenticated else None
+            _start_pipeline_async(pmid, output_dir, user_id)
 
             return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
     else:
@@ -504,21 +661,63 @@ def pipeline_status(request, pmid: str):
     final_video = output_dir / "final_video.mp4"
     log_path = output_dir / "pipeline.log"
 
-    # Get progress with error handling
+    # Try to get progress from database first
+    progress = None
     try:
-        progress = _get_pipeline_progress(output_dir)
+        from web.models import VideoGenerationJob
+        
+        # Try to find job for this paper_id and user (if authenticated)
+        if request.user.is_authenticated:
+            try:
+                job = VideoGenerationJob.objects.get(paper_id=pmid, user=request.user)
+                # Update progress from files if job is running
+                if job.status in ['pending', 'running']:
+                    task_id_file = output_dir / "task_id.txt"
+                    task_id = None
+                    if task_id_file.exists():
+                        try:
+                            with open(task_id_file, "r") as f:
+                                task_id = f.read().strip()
+                        except:
+                            pass
+                    update_job_progress_from_files(pmid, task_id)
+                    job.refresh_from_db()
+                
+                # Convert job to progress dict
+                completed_steps = _get_completed_steps_from_progress(job.progress_percent)
+                progress = {
+                    "status": job.status,
+                    "current_step": job.current_step,
+                    "completed_steps": completed_steps,
+                    "progress_percent": job.progress_percent,
+                    "total_steps": 5,
+                }
+                if job.status == 'failed':
+                    progress["error"] = job.error_message
+                    progress["error_type"] = job.error_type
+            except VideoGenerationJob.DoesNotExist:
+                pass  # Fall through to file-based check
     except Exception as e:
-        # Fallback progress dict if _get_pipeline_progress fails
         import logging
         logger = logging.getLogger(__name__)
-        logger.exception(f"Error getting pipeline progress for {pmid}: {e}")
-        progress = {
-            "status": "pending",
-            "current_step": None,
-            "completed_steps": [],
-            "progress_percent": 0,
-            "total_steps": 5,
-        }
+        logger.warning(f"Error getting progress from database: {e}")
+
+    # Fallback to file-based progress if database doesn't have it
+    if progress is None:
+        try:
+            progress = _get_pipeline_progress(output_dir)
+        except Exception as e:
+            # Fallback progress dict if _get_pipeline_progress fails
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(f"Error getting pipeline progress for {pmid}: {e}")
+            progress = {
+                "status": "pending",
+                "current_step": None,
+                "completed_steps": [],
+                "progress_percent": 0,
+                "total_steps": 5,
+            }
 
     if request.GET.get("_json"):
         # JSON status endpoint - use the new progress tracking
@@ -620,6 +819,42 @@ def serve_video(request, pmid: str):
         logger = logging.getLogger(__name__)
         logger.error(f"Error serving video for {pmid}: {e}")
         return HttpResponse("Error serving video", status=500)
+
+
+@login_required
+def my_videos(request):
+    """Display all videos generated by the current user."""
+    from web.models import VideoGenerationJob
+    
+    jobs = VideoGenerationJob.objects.filter(user=request.user).order_by('-created_at')
+    
+    # Add video URL and metadata for each job
+    videos = []
+    for job in jobs:
+        video_data = {
+            'job': job,
+            'paper_id': job.paper_id,
+            'status': job.status,
+            'progress_percent': job.progress_percent,
+            'current_step': job.current_step,
+            'created_at': job.created_at,
+            'completed_at': job.completed_at,
+            'error_message': job.error_message if job.status == 'failed' else None,
+            'error_type': job.error_type if job.status == 'failed' else None,
+            'video_url': None,
+            'has_video': False,
+        }
+        
+        # Check if video file exists
+        if job.status == 'completed':
+            video_path = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
+            if video_path.exists():
+                video_data['has_video'] = True
+                video_data['video_url'] = reverse('serve_video', args=[job.paper_id])
+        
+        videos.append(video_data)
+    
+    return render(request, 'my_videos.html', {'videos': videos})
 
 
 def register(request):
@@ -729,8 +964,13 @@ def api_start_generation(request):
                 }
             )
         
+        # Get user ID if authenticated (API may not require auth, so this is optional)
+        user_id = None
+        if hasattr(request, 'user') and request.user.is_authenticated:
+            user_id = request.user.id
+        
         # Start the pipeline
-        _start_pipeline_async(paper_id, output_dir)
+        _start_pipeline_async(paper_id, output_dir, user_id)
         
         return JsonResponse({
             "success": True,
@@ -770,7 +1010,62 @@ def api_status(request, paper_id: str):
     }
     """
     output_dir = Path(settings.MEDIA_ROOT) / paper_id
-    progress = _get_pipeline_progress(output_dir)
+    
+    # Try to get progress from database first
+    progress = None
+    try:
+        from web.models import VideoGenerationJob
+        
+        # Try to find most recent job for this paper_id
+        # If user is authenticated, prefer their job
+        if hasattr(request, 'user') and request.user.is_authenticated:
+            try:
+                job = VideoGenerationJob.objects.filter(paper_id=paper_id, user=request.user).order_by('-created_at').first()
+            except:
+                job = None
+        else:
+            job = None
+        
+        if not job:
+            # Try to find any job for this paper_id
+            try:
+                job = VideoGenerationJob.objects.filter(paper_id=paper_id).order_by('-created_at').first()
+            except:
+                job = None
+        
+        if job:
+            # Update progress from files if job is running
+            if job.status in ['pending', 'running']:
+                task_id_file = output_dir / "task_id.txt"
+                task_id = None
+                if task_id_file.exists():
+                    try:
+                        with open(task_id_file, "r") as f:
+                            task_id = f.read().strip()
+                    except:
+                        pass
+                update_job_progress_from_files(paper_id, task_id)
+                job.refresh_from_db()
+            
+            # Convert job to progress dict
+            completed_steps = _get_completed_steps_from_progress(job.progress_percent)
+            progress = {
+                "status": job.status,
+                "current_step": job.current_step,
+                "completed_steps": completed_steps,
+                "progress_percent": job.progress_percent,
+            }
+            if job.status == 'failed':
+                progress["error"] = job.error_message
+                progress["error_type"] = job.error_type
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Error getting progress from database in API: {e}")
+    
+    # Fallback to file-based progress
+    if progress is None:
+        progress = _get_pipeline_progress(output_dir)
     
     final_video = output_dir / "final_video.mp4"
     final_video_url = None

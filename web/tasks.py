@@ -11,11 +11,13 @@ import os
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
 from celery import shared_task
 from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +29,18 @@ logger = logging.getLogger(__name__)
     retry_kwargs={"max_retries": 0},  # Don't auto-retry, but catch all exceptions
     reject_on_worker_lost=False,  # Don't reject task if worker dies
 )
-def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
+def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int] = None) -> Dict:
     """
     Celery task to generate video from a PubMed paper.
     
-    This task runs the kyle-code pipeline in a subprocess and captures
+    This task runs the video generation pipeline in a subprocess and captures
     all output and errors. Errors are stored in a JSON file for retrieval
     by the status endpoint.
     
     Args:
         pmid: PubMed ID or PMC ID of the paper
         output_dir: Directory path where output files will be saved
+        user_id: Optional user ID to associate with the job
         
     Returns:
         Dict with status information:
@@ -66,11 +69,105 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         "error_type": None,
     }
     
+    # Update database job record
+    job = None
+    try:
+        if user_id:
+            from django.contrib.auth.models import User
+            from web.models import VideoGenerationJob
+            try:
+                user = User.objects.get(pk=user_id)
+                job, created = VideoGenerationJob.objects.get_or_create(
+                    task_id=self.request.id,
+                    defaults={
+                        'user': user,
+                        'paper_id': pmid,
+                        'status': 'running',
+                        'progress_percent': 0,
+                        'current_step': 'starting',
+                    }
+                )
+                if not created:
+                    # Update existing job
+                    job.status = 'running'
+                    job.progress_percent = 0
+                    job.current_step = 'starting'
+                    job.save(update_fields=['status', 'progress_percent', 'current_step', 'updated_at'])
+            except Exception as e:
+                logger.warning(f"Failed to create/update job record: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to import models for job tracking: {e}")
+    
     try:
         logger.info(f"Starting video generation task for {pmid}")
         logger.info(f"Task ID: {self.request.id}")
         logger.info(f"Output directory: {output_dir}")
         
+        # Check if simulation mode is enabled
+        if settings.SIMULATION_MODE:
+            logger.info(f"SIMULATION MODE ENABLED - Simulating pipeline progress instead of running actual pipeline")
+            from web.simulation import simulate_pipeline_progress
+            
+            # Update task state
+            self.update_state(
+                state="PROGRESS",
+                meta={"current_step": "starting", "pmid": pmid}
+            )
+            
+            # Create a log file for simulation (use UTF-8 encoding)
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"[SIMULATION MODE] Starting simulated pipeline for {pmid}\n")
+            
+            # Run simulation
+            try:
+                # Close any existing database connections before simulation
+                from django.db import connections
+                connections.close_all()
+                
+                simulate_pipeline_progress(pmid, output_path, self.request.id, job, delay_per_step=3.0)
+                
+                # Update task result to completed
+                task_result["status"] = "completed"
+                logger.info(f"Simulation completed successfully for {pmid}")
+                
+                # Save final task result
+                try:
+                    with open(task_result_file, "w") as f:
+                        json.dump(task_result, f, indent=2)
+                except Exception as e:
+                    logger.warning(f"Failed to save final task result: {e}")
+                
+                return task_result
+            except Exception as e:
+                logger.exception(f"Simulation failed for {pmid}: {e}")
+                task_result["status"] = "failed"
+                task_result["error"] = f"Simulation error: {str(e)}"
+                task_result["error_type"] = "task_error"
+                
+                # Save failed task result
+                try:
+                    with open(task_result_file, "w") as f:
+                        json.dump(task_result, f, indent=2)
+                except Exception as e:
+                    logger.warning(f"Failed to save failed task result: {e}")
+                
+                # Update job record
+                if job:
+                    try:
+                        from django.db import connections
+                        connections.close_all()
+                        # Refresh job from database
+                        job.refresh_from_db()
+                        job.status = 'failed'
+                        job.error_message = task_result["error"]
+                        job.error_type = task_result["error_type"]
+                        job.save(update_fields=['status', 'error_message', 'error_type', 'updated_at'])
+                    except Exception as db_error:
+                        logger.warning(f"Failed to update job record: {db_error}")
+                
+                return task_result
+        
+        # Normal pipeline execution (not simulation)
         # Update task state
         self.update_state(
             state="PROGRESS",
@@ -79,7 +176,7 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         
         # Use the same Python interpreter
         python_exe = sys.executable
-        script_path = Path(settings.BASE_DIR) / "kyle-code" / "main.py"
+        script_path = Path(settings.BASE_DIR) / "pipeline" / "main.py"
         
         # Verify script exists
         if not script_path.exists():
@@ -165,6 +262,18 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         if return_code == 0 and final_video.exists():
             task_result["status"] = "completed"
             logger.info(f"Video generation completed successfully for {pmid}")
+            
+            # Update database job record
+            if job:
+                try:
+                    job.status = 'completed'
+                    job.progress_percent = 100
+                    job.current_step = None
+                    job.final_video_path = str(final_video)
+                    job.completed_at = timezone.now()
+                    job.save(update_fields=['status', 'progress_percent', 'current_step', 'final_video_path', 'completed_at', 'updated_at'])
+                except Exception as e:
+                    logger.warning(f"Failed to update job record on completion: {e}")
         else:
             # Pipeline failed - try to extract error from log
             error_message = _extract_error_from_log(log_path)
@@ -175,6 +284,16 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
             task_result["error_type"] = error_type
             
             logger.error(f"Video generation failed for {pmid}: {error_message}")
+            
+            # Update database job record
+            if job:
+                try:
+                    job.status = 'failed'
+                    job.error_message = error_message
+                    job.error_type = error_type
+                    job.save(update_fields=['status', 'error_message', 'error_type', 'updated_at'])
+                except Exception as e:
+                    logger.warning(f"Failed to update job record on failure: {e}")
             
             # Update task state with error (use PROGRESS state, not FAILURE, to avoid serialization issues)
             # We'll return the failed result instead of raising an exception
@@ -194,6 +313,17 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         task_result["status"] = "failed"
         task_result["error"] = "Task was interrupted"
         task_result["error_type"] = "task_error"
+        
+        # Update database job record
+        if job:
+            try:
+                job.status = 'failed'
+                job.error_message = "Task was interrupted"
+                job.error_type = "task_error"
+                job.save(update_fields=['status', 'error_message', 'error_type', 'updated_at'])
+            except Exception as e:
+                logger.warning(f"Failed to update job record on interrupt: {e}")
+        
         raise  # Re-raise to let Celery handle it
     except Exception as e:
         # Catch ALL other exceptions to prevent worker crash
@@ -203,6 +333,16 @@ def generate_video_task(self, pmid: str, output_dir: str) -> Dict:
         task_result["error_type"] = "task_error"
         
         logger.exception(f"Unexpected error in video generation task for {pmid}")
+        
+        # Update database job record
+        if job:
+            try:
+                job.status = 'failed'
+                job.error_message = error_message
+                job.error_type = "task_error"
+                job.save(update_fields=['status', 'error_message', 'error_type', 'updated_at'])
+            except Exception as e:
+                logger.warning(f"Failed to update job record on exception: {e}")
         
         # Update task state (use PROGRESS instead of FAILURE to avoid serialization issues)
         try:
@@ -329,4 +469,75 @@ def get_task_status(pmid: str) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"Failed to read task result for {pmid}: {e}")
         return None
+
+
+def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> None:
+    """
+    Update job progress in database based on file existence checks.
+    
+    This function checks which pipeline steps have completed by looking for
+    output files, and updates the database job record accordingly.
+    
+    Args:
+        pmid: PubMed ID
+        task_id: Optional task ID to find the job record
+    """
+    try:
+        from web.models import VideoGenerationJob
+        
+        # Find job by paper_id and optionally task_id
+        if task_id:
+            try:
+                job = VideoGenerationJob.objects.get(task_id=task_id)
+            except VideoGenerationJob.DoesNotExist:
+                return
+        else:
+            # Try to find most recent job for this paper_id
+            try:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+                if not job:
+                    return
+            except Exception:
+                return
+        
+        # Only update if job is still running
+        if job.status not in ['pending', 'running']:
+            return
+        
+        output_dir = Path(settings.MEDIA_ROOT) / pmid
+        
+        # Check pipeline steps
+        steps = [
+            ("fetch-paper", 20, lambda d: (d / "paper.json").exists()),
+            ("generate-script", 40, lambda d: (d / "script.json").exists()),
+            ("generate-audio", 60, lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
+            ("generate-videos", 80, lambda d: (d / "clips" / ".videos_complete").exists()),
+            ("add-captions", 100, lambda d: (d / "final_video.mp4").exists()),
+        ]
+        
+        current_step = None
+        progress_percent = 0
+        
+        for step_name, step_percent, check_func in steps:
+            if check_func(output_dir):
+                progress_percent = step_percent
+            else:
+                if current_step is None:
+                    current_step = step_name
+                break
+        
+        # Update job if progress changed
+        if job.progress_percent != progress_percent or job.current_step != current_step:
+            job.progress_percent = progress_percent
+            job.current_step = current_step
+            if progress_percent == 100:
+                final_video = output_dir / "final_video.mp4"
+                if final_video.exists():
+                    job.status = 'completed'
+                    job.final_video_path = str(final_video)
+                    job.completed_at = timezone.now()
+                    job.current_step = None
+            job.save(update_fields=['progress_percent', 'current_step', 'status', 'final_video_path', 'completed_at', 'updated_at'])
+    except Exception as e:
+        logger.warning(f"Failed to update job progress from files: {e}")
 

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}My Videos - Hidden Hill{% endblock %}
+
+{% block header_title %}My Videos{% endblock %}
+
+{% block content %}
+  <div class="button-group" style="margin-bottom: 2em;">
+    <a href="/upload/" class="btn-primary">Generate New Video</a>
+  </div>
+
+  {% if videos %}
+    <div class="videos-list">
+      {% for video in videos %}
+        <div class="video-card" style="border: 1px solid #ddd; border-radius: 8px; padding: 1.5em; margin-bottom: 1.5em; background-color: #fff;">
+          <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1em;">
+            <div>
+              <h3 style="margin: 0 0 0.5em 0;">
+                <a href="/status/{{ video.paper_id }}/" style="text-decoration: none; color: inherit;">
+                  {{ video.paper_id }}
+                </a>
+              </h3>
+              <p style="margin: 0; color: #666; font-size: 0.9em;">
+                Created: {{ video.created_at|date:"F d, Y H:i" }}
+                {% if video.completed_at %}
+                  <br>Completed: {{ video.completed_at|date:"F d, Y H:i" }}
+                {% endif %}
+              </p>
+            </div>
+            <div style="text-align: right;">
+              {% if video.status == "completed" %}
+                <span style="background-color: #4CAF50; color: white; padding: 0.3em 0.8em; border-radius: 4px; font-size: 0.9em; font-weight: bold;">✓ Completed</span>
+              {% elif video.status == "running" %}
+                <span style="background-color: #2196F3; color: white; padding: 0.3em 0.8em; border-radius: 4px; font-size: 0.9em; font-weight: bold;">⟳ Running</span>
+              {% elif video.status == "pending" %}
+                <span style="background-color: #FF9800; color: white; padding: 0.3em 0.8em; border-radius: 4px; font-size: 0.9em; font-weight: bold;">⏳ Pending</span>
+              {% elif video.status == "failed" %}
+                <span style="background-color: #f44336; color: white; padding: 0.3em 0.8em; border-radius: 4px; font-size: 0.9em; font-weight: bold;">✗ Failed</span>
+              {% endif %}
+            </div>
+          </div>
+
+          {% if video.status == "running" or video.status == "pending" %}
+            <div style="margin: 1em 0;">
+              <div style="background-color: #f0f0f0; border-radius: 4px; padding: 2px; margin-bottom: 0.5em;">
+                <div style="background-color: #4CAF50; height: 20px; border-radius: 4px; width: {{ video.progress_percent }}%; transition: width 0.3s;"></div>
+              </div>
+              <p style="margin: 0; font-size: 0.9em; color: #666;">
+                {{ video.progress_percent }}% complete
+                {% if video.current_step %}
+                  - {{ video.current_step }}
+                {% endif %}
+              </p>
+            </div>
+            <div class="button-group" style="margin-top: 1em;">
+              <a href="/status/{{ video.paper_id }}/" class="btn-secondary">View Status</a>
+            </div>
+          {% elif video.status == "completed" %}
+            {% if video.has_video %}
+              <div style="margin: 1em 0;">
+                <video controls style="width: 100%; max-width: 600px; border-radius: 4px; background-color: #000;">
+                  <source src="{{ video.video_url }}" type="video/mp4">
+                  Your browser does not support the video tag.
+                </video>
+              </div>
+            {% endif %}
+            <div class="button-group" style="margin-top: 1em;">
+              <a href="/result/{{ video.paper_id }}/" class="btn-primary">View Result</a>
+              <a href="/status/{{ video.paper_id }}/" class="btn-secondary">View Details</a>
+            </div>
+          {% elif video.status == "failed" %}
+            <div style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
+              <p style="margin: 0; color: #c00; font-weight: 500;">
+                <strong>Error:</strong>
+                {% if video.error_message %}
+                  {{ video.error_message|truncatewords:30 }}
+                {% else %}
+                  Video generation failed. Please try again.
+                {% endif %}
+              </p>
+            </div>
+            <div class="button-group" style="margin-top: 1em;">
+              <a href="/status/{{ video.paper_id }}/" class="btn-secondary">View Details</a>
+              <a href="/upload/" class="btn-primary">Try Again</a>
+            </div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div style="text-align: center; padding: 3em; color: #666;">
+      <p style="font-size: 1.2em; margin-bottom: 1em;">You haven't generated any videos yet.</p>
+      <a href="/upload/" class="btn-primary">Generate Your First Video</a>
+    </div>
+  {% endif %}
+{% endblock %}
+

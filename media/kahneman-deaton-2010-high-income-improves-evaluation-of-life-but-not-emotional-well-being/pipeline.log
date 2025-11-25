@@ -1,0 +1,7 @@
+2025-11-20 15:26:48,743 - INFO - Starting pipeline for PMID kahneman-deaton-2010-high-income-improves-evaluation-of-life-but-not-emotional-well-being
+2025-11-20 15:26:48,744 - INFO - Output directory: C:\Users\david\OneDrive\Desktop\Cursor Projects\Hidden-Hill\media\kahneman-deaton-2010-high-income-improves-evaluation-of-life-but-not-emotional-well-being
+2025-11-20 15:26:48,744 - INFO - Step: fetch-paper
+2025-11-20 15:26:48,744 - INFO -   \u2192 Fetching paper kahneman-deaton-2010-high-income-improves-evaluation-of-life-but-not-emotional-well-being from PubMed Central
+2025-11-20 15:26:48,858 - ERROR -   \u2717 Step 'fetch-paper' failed: PMID kahneman-deaton-2010-high-income-improves-evaluation-of-life-but-not-emotional-well-being is not available in PubMed Central. This tool only works with open-access papers in PMC.
+\u2717 Pipeline failed: Step 'fetch-paper' failed: PMID kahneman-deaton-2010-high-income-improves-evaluation-of-life-but-not-emotional-well-being is not available in PubMed Central. This tool only works with open-access papers in PMC.
+Aborted!

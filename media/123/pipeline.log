@@ -1,0 +1,7 @@
+2025-11-20 15:56:28,868 - INFO - Starting pipeline for PMID 123
+2025-11-20 15:56:28,868 - INFO - Output directory: C:\Users\david\OneDrive\Desktop\Cursor Projects\Hidden-Hill\media\123
+2025-11-20 15:56:28,868 - INFO - Step: fetch-paper
+2025-11-20 15:56:28,868 - INFO -   \u2192 Fetching paper 123 from PubMed Central
+2025-11-20 15:56:28,983 - ERROR -   \u2717 Step 'fetch-paper' failed: PMID 123 is not available in PubMed Central. This tool only works with open-access papers in PMC.
+\u2717 Pipeline failed: Step 'fetch-paper' failed: PMID 123 is not available in PubMed Central. This tool only works with open-access papers in PMC.
+Aborted!

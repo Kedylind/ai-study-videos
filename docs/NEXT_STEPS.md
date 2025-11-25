@@ -21,84 +21,302 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ## 🚀 High Priority (Production Readiness)
 
-### 1. Add Database Models for Job Tracking
+### 1. Add Database Models for Job Tracking + User Video Archive
 **Status:** Not implemented  
 **Priority:** 🔴 Critical  
-**Estimated Effort:** 2-3 hours
+**Estimated Effort:** 4-5 hours
+
+**GOAL:** 
+1. Show a **reliable, real-time progress bar** while Celery processes video generation in the background
+2. Create a **"My Videos" archive page** where each logged-in user can see all videos they've generated (user-specific, private to them)
 
 **Problem:**
 - Current implementation uses file-based status tracking (checking file existence)
-- Complex status checking logic with multiple fallback methods
+- Complex status checking logic with multiple fallback methods (400+ lines in `_get_pipeline_progress()`)
 - No way to query all videos or track user history
 - Doesn't scale to multiple servers
 - No user association with generated videos
+- Progress bar is unreliable because it depends on file system checks
+- Users cannot see their video generation history
 
-**Solution: Database Models**
-- Create `VideoGenerationJob` model to track each generation
-- Store status, progress, errors in database
+**Solution: Database Models + Real-Time Progress Updates**
+- Create `VideoGenerationJob` model to track each generation in the database
+- Store status, progress, errors in database (single source of truth)
 - Link jobs to users for history tracking
-- Single source of truth for status
+- Update progress in real-time as Celery task runs
+- Create "My Videos" page showing user's video history
 
-**What needs to be done:**
+---
 
-1. **Create database models:**
-   - `VideoGenerationJob` model with fields:
-     - `user` (ForeignKey to User)
-     - `paper_id` (CharField, indexed)
-     - `status` (CharField: pending, running, completed, failed)
-     - `progress_percent` (IntegerField)
-     - `current_step` (CharField, nullable)
-     - `error_message` (TextField, blank)
-     - `error_type` (CharField, blank)
-     - `task_id` (CharField for Celery task ID)
-     - `final_video_path` (CharField)
-     - `created_at`, `updated_at`, `completed_at` (DateTimeFields)
+## Implementation Steps
 
-2. **Create and run migrations:**
-   - `python manage.py makemigrations`
-   - `python manage.py migrate`
+### Step 1: Create Database Model
 
-3. **Update Celery task to save to database:**
-   - Create/update `VideoGenerationJob` record when task starts
-   - Update status and progress as pipeline runs
-   - Save error information on failure
-   - Mark as completed when video is ready
+**File:** `web/models.py` (create this file if it doesn't exist)
 
-4. **Simplify status checking:**
-   - Replace complex `_get_pipeline_progress()` with simple database query
-   - Remove file-based status checks (keep as fallback initially)
-   - Update `pipeline_status()` view to read from database
+Create a `VideoGenerationJob` model with these exact fields:
 
-5. **Update views:**
-   - Create `VideoGenerationJob` when user submits paper
-   - Link job to current user
-   - Store Celery task ID in job record
+```python
+from django.db import models
+from django.contrib.auth.models import User
 
-**Code changes needed:**
-- `web/models.py`: Create `VideoGenerationJob` model (new file or add to existing)
-- `web/tasks.py`: Update `generate_video_task()` to save status to database
-- `web/views.py`: Create job record in `upload_paper()` view
-- `web/views.py`: Simplify `_get_pipeline_progress()` to query database
-- `web/views.py`: Update `pipeline_status()` to use database
+class VideoGenerationJob(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('running', 'Running'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='video_jobs')
+    paper_id = models.CharField(max_length=255, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    progress_percent = models.IntegerField(default=0)
+    current_step = models.CharField(max_length=100, null=True, blank=True)
+    error_message = models.TextField(blank=True)
+    error_type = models.CharField(max_length=50, blank=True)
+    task_id = models.CharField(max_length=255, unique=True)  # Celery task ID
+    final_video_path = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['status']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.paper_id} - {self.status}"
+```
 
-**Benefits:**
-- ✅ Single source of truth for status
-- ✅ Simple, reliable status checking
-- ✅ User history tracking
-- ✅ Scalable to multiple servers
-- ✅ Easy to query and filter videos
-- ✅ Enables video management UI
-- ✅ Better for analytics and monitoring
+**Action:** Create `web/models.py` with the model above, then run:
+```bash
+python manage.py makemigrations
+python manage.py migrate
+```
 
-**Action items:**
-- [ ] Create `VideoGenerationJob` model
-- [ ] Create and run database migrations
-- [ ] Update Celery task to save status to database
-- [ ] Simplify status checking to use database
-- [ ] Update views to create/update job records
-- [ ] Test status updates work correctly
-- [ ] Test user association works
-- [ ] (Optional) Add `Paper` model for paper metadata
+---
+
+### Step 2: Update Celery Task to Save Progress to Database
+
+**File:** `web/tasks.py`
+
+**What to do:**
+1. Import the model: `from web.models import VideoGenerationJob`
+2. At the START of `generate_video_task()`:
+   - Get or create the `VideoGenerationJob` record
+   - Set initial status to 'running', progress_percent=0
+   - Save the task_id from `self.request.id`
+   - Link to user (you'll need to pass user_id as a parameter - see Step 3)
+
+3. As the pipeline runs, update the job record with progress:
+   - When each step completes, update `current_step` and `progress_percent`
+   - Pipeline steps are: `fetch-paper` (20%), `generate-script` (40%), `generate-audio` (60%), `generate-videos` (80%), `add-captions` (100%)
+   - Use `VideoGenerationJob.objects.filter(task_id=task_id).update(...)` to update
+
+4. On SUCCESS:
+   - Set `status='completed'`, `progress_percent=100`, `completed_at=now()`
+   - Set `final_video_path` to the video file path
+
+5. On FAILURE:
+   - Set `status='failed'`
+   - Save `error_message` and `error_type` from error classification
+
+**Key requirement:** Update progress at least once per pipeline step. The frontend polls every 3 seconds, so updates should happen frequently enough for smooth progress bar updates.
+
+**Example update pattern:**
+```python
+# In generate_video_task(), after each pipeline step:
+job = VideoGenerationJob.objects.get(task_id=self.request.id)
+job.current_step = "generate-script"
+job.progress_percent = 40
+job.save(update_fields=['current_step', 'progress_percent', 'updated_at'])
+```
+
+---
+
+### Step 3: Update Views to Create Job Record
+
+**File:** `web/views.py`
+
+**In `upload_paper()` view:**
+1. When user submits paper (after access code validation):
+   - Create `VideoGenerationJob` record BEFORE starting Celery task
+   - Set `user=request.user`, `paper_id=pmid`, `status='pending'`
+   - Save the job to get the ID
+   - Pass `user_id=request.user.id` to the Celery task
+
+2. Update `_start_pipeline_async()` to accept `user_id` parameter:
+   ```python
+   def _start_pipeline_async(pmid: str, output_dir: Path, user_id: int):
+       task = generate_video_task.delay(pmid, str(output_dir), user_id)
+       # ... rest of function
+   ```
+
+**In `pipeline_status()` view:**
+1. Replace the complex `_get_pipeline_progress()` logic with a simple database query:
+   ```python
+   try:
+       job = VideoGenerationJob.objects.get(paper_id=pmid, user=request.user)
+       progress = {
+           "status": job.status,
+           "current_step": job.current_step,
+           "progress_percent": job.progress_percent,
+           "completed_steps": _get_completed_steps_from_progress(job.progress_percent),
+           "error": job.error_message if job.status == 'failed' else None,
+           "error_type": job.error_type if job.status == 'failed' else None,
+       }
+   except VideoGenerationJob.DoesNotExist:
+       # Fallback to old file-based method (for backwards compatibility)
+       progress = _get_pipeline_progress(output_dir)
+   ```
+
+2. Keep `_get_pipeline_progress()` as a fallback for old jobs, but mark it as deprecated.
+
+**In `api_start_generation()` view:**
+- Similar changes: create job record, pass user_id to task
+- For API calls, you may need to handle anonymous users differently (or require authentication)
+
+---
+
+### Step 4: Create "My Videos" Archive Page
+
+**New view:** `web/views.py`
+
+Add a new view function:
+```python
+@login_required
+def my_videos(request):
+    """Display all videos generated by the current user."""
+    jobs = VideoGenerationJob.objects.filter(user=request.user).order_by('-created_at')
+    
+    # Add video URL and metadata for each job
+    videos = []
+    for job in jobs:
+        video_data = {
+            'job': job,
+            'paper_id': job.paper_id,
+            'status': job.status,
+            'progress_percent': job.progress_percent,
+            'created_at': job.created_at,
+            'completed_at': job.completed_at,
+            'video_url': None,
+            'has_video': False,
+        }
+        
+        # Check if video file exists
+        if job.status == 'completed' and job.final_video_path:
+            video_path = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
+            if video_path.exists():
+                video_data['has_video'] = True
+                video_data['video_url'] = reverse('serve_video', args=[job.paper_id])
+        
+        videos.append(video_data)
+    
+    return render(request, 'my_videos.html', {'videos': videos})
+```
+
+**New template:** `web/templates/my_videos.html`
+
+Create a template that:
+- Shows a list/grid of all user's videos
+- Displays paper_id, status, creation date
+- Shows progress bar for in-progress videos
+- Shows video thumbnail/player for completed videos
+- Links to status page for running videos
+- Links to result page for completed videos
+- Shows error message for failed videos
+- Has a "Generate New Video" button linking to `/upload/`
+
+**New URL:** `web/urls.py`
+
+Add:
+```python
+path('my-videos/', my_videos, name='my_videos'),
+```
+
+**Add navigation link:** Update base template or navigation to include "My Videos" link (only visible when logged in).
+
+---
+
+### Step 5: Update API Endpoints
+
+**File:** `web/views.py`
+
+Update `api_start_generation()`:
+- Create `VideoGenerationJob` record (may need to handle API authentication differently)
+- Pass user info to Celery task
+
+Update `api_status()`:
+- Query database instead of file system
+- Return same JSON format for backwards compatibility
+
+---
+
+## Testing Checklist
+
+After implementation, verify:
+
+- [ ] **Progress Bar Works:**
+  - Start a video generation
+  - Watch the status page - progress bar should update smoothly (every 3 seconds)
+  - Progress should go: 0% → 20% → 40% → 60% → 80% → 100%
+  - Each step name should appear as it progresses
+
+- [ ] **Database Updates:**
+  - Check database after starting a job - record should exist
+  - Check database during processing - progress_percent should update
+  - Check database after completion - status should be 'completed', completed_at set
+
+- [ ] **My Videos Page:**
+  - Log in as User A, generate a video
+  - Log in as User B, generate a different video
+  - User A's "My Videos" should only show User A's video
+  - User B's "My Videos" should only show User B's video
+  - Both users should see their own videos, not each other's
+
+- [ ] **Error Handling:**
+  - Test with invalid PubMed ID - should show error in database
+  - Failed jobs should appear in "My Videos" with error message
+  - Status should be 'failed' in database
+
+- [ ] **Backwards Compatibility:**
+  - Old file-based jobs should still work (fallback)
+  - New jobs use database, old jobs use file system
+
+---
+
+## Files to Modify
+
+1. **`web/models.py`** - Create new file with `VideoGenerationJob` model
+2. **`web/tasks.py`** - Update `generate_video_task()` to save/update database records
+3. **`web/views.py`** - Update `upload_paper()`, `pipeline_status()`, `api_start_generation()`, add `my_videos()` view
+4. **`web/urls.py`** - Add route for `my_videos`
+5. **`web/templates/my_videos.html`** - Create new template
+6. **`web/templates/base.html`** or navigation template - Add "My Videos" link
+
+---
+
+## Expected End Result
+
+**For Progress Bar:**
+- User submits paper → redirected to status page
+- Status page shows progress bar that updates every 3 seconds
+- Progress bar shows: "20% - Fetching paper..." → "40% - Generating script..." → etc.
+- When complete, automatically redirects to result page
+- All progress data comes from database (fast, reliable)
+
+**For My Videos Archive:**
+- User can navigate to `/my-videos/` (link in navigation)
+- Page shows all videos they've generated, newest first
+- Each video shows: paper_id, status, date created, thumbnail/preview
+- Clicking a video takes them to the result/status page
+- Only shows videos for the logged-in user (private)
+- Shows in-progress videos with live progress
+- Shows failed videos with error messages
 
 ---
 
