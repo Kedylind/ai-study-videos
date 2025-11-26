@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Literal, List
@@ -119,58 +120,141 @@ Return ONLY a JSON object with this structure:
   ]
 }}"""
 
-    # Generate scenes using Gemini
+    # Generate scenes using Gemini with retry logic
     logger.info("Calling Gemini API to generate scenes")
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-exp",
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-
-        # Parse response
-        response_data = json.loads(response.text)
-        scenes_data = response_data.get("scenes", [])
-
-        if not scenes_data:
-            raise ValueError("Gemini returned no scenes")
-
-        logger.info(f"Generated {len(scenes_data)} scenes")
-
-        # Validate and create Scene objects
-        scenes = []
-        for scene_data in scenes_data:
-            if not all(
-                k in scene_data for k in ["text", "visual_type", "visual_content"]
-            ):
-                logger.warning(f"Skipping invalid scene: {scene_data}")
-                continue
-
-            if scene_data["visual_type"] != "generated":
-                logger.warning(
-                    f"Invalid visual_type '{scene_data['visual_type']}', defaulting to 'generated'"
-                )
-                scene_data["visual_type"] = "generated"
-
-            scenes.append(
-                Scene(
-                    text=scene_data["text"],
-                    visual_type=scene_data["visual_type"],
-                    visual_content=scene_data["visual_content"],
-                )
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp",
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
             )
 
-        if not scenes:
-            raise ValueError("No valid scenes generated")
+            # Try to parse response with error recovery
+            response_text = response.text.strip()
+            
+            # Try to extract JSON if it's wrapped in markdown code blocks
+            if response_text.startswith("```"):
+                # Remove markdown code blocks
+                lines = response_text.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                response_text = "\n".join(lines)
+            
+            # Try to parse JSON
+            try:
+                response_data = json.loads(response_text)
+            except json.JSONDecodeError as json_err:
+                # Try to fix common JSON issues
+                logger.warning(f"Initial JSON parse failed: {json_err}. Attempting to fix...")
+                
+                # Try to fix missing commas between objects in arrays
+                # Fix missing comma before closing brace in arrays: }] -> },]
+                fixed_text = re.sub(r'}\s*\]', r'},]', response_text)
+                # Fix missing comma after closing brace: }" -> }," (but not at end)
+                fixed_text = re.sub(r'}\s*"', r'},"', fixed_text)
+                # Fix missing comma between array elements: }" -> }," (in middle of array)
+                fixed_text = re.sub(r'}\s*\n\s*"', r'},\n"', fixed_text)
+                
+                try:
+                    response_data = json.loads(fixed_text)
+                    logger.info("Successfully fixed JSON parsing issue")
+                except json.JSONDecodeError:
+                    # If still failing, try to extract JSON from the response
+                    # Look for JSON object boundaries
+                    start_idx = response_text.find("{")
+                    end_idx = response_text.rfind("}")
+                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                        json_candidate = response_text[start_idx:end_idx + 1]
+                        try:
+                            response_data = json.loads(json_candidate)
+                            logger.info("Successfully extracted JSON from response")
+                        except json.JSONDecodeError:
+                            if retry_count < max_retries - 1:
+                                logger.warning(f"JSON parsing failed, retrying ({retry_count + 1}/{max_retries})...")
+                                retry_count += 1
+                                continue
+                            else:
+                                logger.error(f"Failed to parse JSON after {max_retries} attempts. Response text: {response_text[:500]}")
+                                raise Exception(f"Invalid JSON response from Gemini after {max_retries} attempts: {json_err}")
+                    else:
+                        if retry_count < max_retries - 1:
+                            logger.warning(f"Could not find JSON in response, retrying ({retry_count + 1}/{max_retries})...")
+                            retry_count += 1
+                            continue
+                        else:
+                            logger.error(f"Could not extract JSON from response. Response text: {response_text[:500]}")
+                            raise Exception(f"Invalid JSON response from Gemini: Could not extract valid JSON. Error: {json_err}")
+            
+            scenes_data = response_data.get("scenes", [])
 
-        return scenes
+            if not scenes_data:
+                if retry_count < max_retries - 1:
+                    logger.warning(f"Gemini returned no scenes, retrying ({retry_count + 1}/{max_retries})...")
+                    retry_count += 1
+                    continue
+                else:
+                    raise ValueError("Gemini returned no scenes after all retries")
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Gemini response as JSON: {e}")
-        raise Exception(f"Invalid JSON response from Gemini: {e}")
-    except Exception as e:
-        logger.error(f"Error generating scenes: {e}")
-        raise
+            logger.info(f"Generated {len(scenes_data)} scenes")
+
+            # Validate and create Scene objects
+            scenes = []
+            for scene_data in scenes_data:
+                if not all(
+                    k in scene_data for k in ["text", "visual_type", "visual_content"]
+                ):
+                    logger.warning(f"Skipping invalid scene: {scene_data}")
+                    continue
+
+                if scene_data["visual_type"] != "generated":
+                    logger.warning(
+                        f"Invalid visual_type '{scene_data['visual_type']}', defaulting to 'generated'"
+                    )
+                    scene_data["visual_type"] = "generated"
+
+                scenes.append(
+                    Scene(
+                        text=scene_data["text"],
+                        visual_type=scene_data["visual_type"],
+                        visual_content=scene_data["visual_content"],
+                    )
+                )
+
+            if not scenes:
+                if retry_count < max_retries - 1:
+                    logger.warning(f"No valid scenes generated, retrying ({retry_count + 1}/{max_retries})...")
+                    retry_count += 1
+                    continue
+                else:
+                    raise ValueError("No valid scenes generated after all retries")
+
+            return scenes
+
+        except json.JSONDecodeError as e:
+            if retry_count < max_retries - 1:
+                logger.warning(f"JSON decode error, retrying ({retry_count + 1}/{max_retries}): {e}")
+                retry_count += 1
+                continue
+            else:
+                logger.error(f"Failed to parse Gemini response as JSON after {max_retries} attempts: {e}")
+                raise Exception(f"Invalid JSON response from Gemini after {max_retries} attempts: {e}")
+        except Exception as e:
+            if retry_count < max_retries - 1 and "Invalid JSON" not in str(e):
+                logger.warning(f"Error generating scenes, retrying ({retry_count + 1}/{max_retries}): {e}")
+                retry_count += 1
+                continue
+            else:
+                logger.error(f"Error generating scenes: {e}")
+                raise
+    
+    # Should not reach here, but just in case
+    raise Exception(f"Failed to generate scenes after {max_retries} attempts")
 
 
 def save_scenes(scenes: List[Scene], output_path: Path) -> None:
