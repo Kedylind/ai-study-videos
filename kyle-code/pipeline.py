@@ -72,6 +72,7 @@ def orchestrate_pipeline(
     voice: str = "Kore",
     max_workers: int = 5,
     merge: bool = True,
+    is_local_file: bool = False,
 ) -> None:
     """Orchestrate the complete video generation pipeline.
 
@@ -83,6 +84,7 @@ def orchestrate_pipeline(
         voice: Gemini TTS voice to use
         max_workers: Maximum parallel workers for video generation
         merge: If True, concatenate all video clips into a single final video (default: True)
+        is_local_file: If True, skip fetch-paper step (paper.json should already exist)
 
     Raises:
         PipelineError: If any step fails
@@ -90,13 +92,25 @@ def orchestrate_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Define pipeline steps
-    steps = [
-        PipelineStep(
+    steps = []
+
+    # Only add fetch-paper step if not a local file (local files should have paper.json already)
+    if not is_local_file:
+        steps.append(PipelineStep(
             name="fetch-paper",
             description=f"Fetching paper {pmid} from PubMed Central",
             check_completion=lambda: check_paper_fetched(output_dir),
             execute=lambda: fetch_paper(pmid, str(output_dir)),
-        ),
+        ))
+    else:
+        # For local files, verify paper.json exists
+        logger.info(f"Processing local file: {pmid}")
+        if not check_paper_fetched(output_dir):
+            raise PipelineError(f"paper.json not found in {output_dir}. File may not have been processed correctly.")
+        logger.info("paper.json found, skipping fetch-paper step")
+
+    # Add remaining steps
+    steps.extend([
         PipelineStep(
             name="generate-script",
             description="Generating video script with scenes",
@@ -121,7 +135,7 @@ def orchestrate_pipeline(
             check_completion=lambda: check_captions_added(output_dir),
             execute=lambda: _add_captions_step(output_dir, merge=merge),
         ),
-    ]
+    ])
 
     logger.info(f"Starting pipeline for PMID {pmid}")
     logger.info(f"Output directory: {output_dir}")

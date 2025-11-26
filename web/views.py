@@ -14,6 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
 from .tasks import generate_video_task, get_task_status
+from .file_utils import process_uploaded_file, validate_uploaded_file
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -461,7 +462,7 @@ def upload_paper(request):
                 # Server misconfiguration - access code not set
                 form.add_error(None, f"Server configuration error: {e}")
                 return render(request, "upload.html", {"form": form})
-            
+
             pmid = form.cleaned_data.get("paper_id")
             # If a file is uploaded we save it and use a folder named by filename
             uploaded = form.cleaned_data.get("file")
@@ -472,12 +473,23 @@ def upload_paper(request):
                 out_dir = Path(settings.MEDIA_ROOT) / name
                 out_dir.mkdir(parents=True, exist_ok=True)
                 file_path = out_dir / uploaded.name
-                with open(file_path, "wb") as f:
-                    for chunk in uploaded.chunks():
-                        f.write(chunk)
 
-                # TODO: support pipeline from local file; for now, return to status page
-                # We'll treat 'name' as an identifier
+                # Save file to disk
+                try:
+                    with open(file_path, "wb") as f:
+                        for chunk in uploaded.chunks():
+                            f.write(chunk)
+                except Exception as e:
+                    form.add_error(None, f"Failed to save file: {str(e)}")
+                    return render(request, "upload.html", {"form": form})
+
+                # Process uploaded file: extract text and create paper.json
+                success, error_msg, paper_data = process_uploaded_file(file_path, out_dir)
+                if not success:
+                    form.add_error(None, f"File processing error: {error_msg}")
+                    return render(request, "upload.html", {"form": form})
+
+                # Use filename stem as identifier
                 pmid = name
             else:
                 if not pmid:

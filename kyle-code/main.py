@@ -587,6 +587,11 @@ def generate_video(
     output_path = Path(output_dir)
 
     try:
+        # Detect if this is a local file by checking for paper.json (pre-processed)
+        # If paper.json exists, skip fetch-paper step
+        paper_json_path = output_path / "paper.json"
+        is_local_file = paper_json_path.exists()
+
         orchestrate_pipeline(
             pmid=pmid,
             output_dir=output_path,
@@ -595,6 +600,7 @@ def generate_video(
             voice=voice,
             max_workers=max_workers,
             merge=not no_merge,
+            is_local_file=is_local_file,
         )
         click.secho(
             f"✓ Pipeline complete! Videos in {output_path}", fg="green", bold=True
