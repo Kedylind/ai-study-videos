@@ -9,6 +9,12 @@
     <a href="/upload/" class="btn-primary">Generate New Video</a>
   </div>
 
+  {% if error %}
+    <div class="alert alert-error" style="background-color: #fee; border: 1px solid #fcc; padding: 1em; margin: 1em 0; border-radius: 4px;">
+      <p style="margin: 0; color: #c00; font-weight: 500;">{{ error }}</p>
+    </div>
+  {% endif %}
+
   {% if videos %}
     <div class="videos-list">
       {% for video in videos %}
