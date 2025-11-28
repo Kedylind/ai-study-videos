@@ -19,7 +19,7 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
-from .tasks import generate_video_task, get_task_status, update_job_progress_from_files
+from .tasks import generate_video_task, get_task_status, update_job_progress_from_files, test_volume_write_task
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -223,6 +223,210 @@ def static_debug(request):
         return JsonResponse(info, indent=2)
     except Exception as e:
         return JsonResponse({"error": str(e), "type": type(e).__name__}, status=500)
+
+
+def debug_media_path(request):
+    """
+    Debug endpoint to verify Railway volume mounting for persistent storage.
+    
+    This endpoint checks if MEDIA_ROOT exists, is writable, and shows information
+    about the media directory. Use this to verify that Railway volumes are
+    mounted correctly.
+    
+    Access: /debug-media/
+    """
+    import os
+    from pathlib import Path
+    from django.conf import settings
+    
+    try:
+        media_root = Path(settings.MEDIA_ROOT)
+        base_dir = Path(settings.BASE_DIR)
+        
+        # Get basic info
+        info = {
+            "BASE_DIR": str(base_dir),
+            "MEDIA_ROOT": str(media_root),
+            "MEDIA_URL": settings.MEDIA_URL,
+            "MEDIA_ROOT_exists": media_root.exists(),
+            "MEDIA_ROOT_is_dir": media_root.is_dir() if media_root.exists() else False,
+            "MEDIA_ROOT_writable": os.access(media_root, os.W_OK) if media_root.exists() else False,
+            "MEDIA_ROOT_readable": os.access(media_root, os.R_OK) if media_root.exists() else False,
+        }
+        
+        # Check if MEDIA_ROOT is expected path for Railway
+        expected_railway_path = "/app/media"
+        info["expected_railway_path"] = expected_railway_path
+        info["matches_railway_path"] = str(media_root) == expected_railway_path
+        
+        # Try to list files in media directory
+        if media_root.exists():
+            try:
+                files = list(media_root.iterdir())
+                info["files_count"] = len(files)
+                info["files_in_media"] = [
+                    {
+                        "name": f.name,
+                        "is_dir": f.is_dir(),
+                        "size": f.stat().st_size if f.is_file() else None,
+                    }
+                    for f in files[:20]  # Limit to first 20 items
+                ]
+                
+                # Check for video directories
+                video_dirs = [f.name for f in files if f.is_dir()]
+                info["video_directories"] = video_dirs[:10]
+                
+            except Exception as e:
+                info["list_files_error"] = str(e)
+        else:
+            info["warning"] = "MEDIA_ROOT directory does not exist. This may indicate the Railway volume is not mounted."
+            # Try to create it (this will fail if volume isn't mounted, which is useful info)
+            try:
+                media_root.mkdir(parents=True, exist_ok=True)
+                info["created_directory"] = True
+                info["created_directory_writable"] = os.access(media_root, os.W_OK)
+            except Exception as e:
+                info["create_directory_error"] = str(e)
+                info["create_directory_error_type"] = type(e).__name__
+        
+        # Check if we can write a test file
+        if media_root.exists() and os.access(media_root, os.W_OK):
+            try:
+                test_file = media_root / ".test_write"
+                test_file.write_text("test")
+                test_file.unlink()
+                info["test_write_successful"] = True
+            except Exception as e:
+                info["test_write_successful"] = False
+                info["test_write_error"] = str(e)
+        
+        # Volume mounting verification
+        info["volume_mounting_status"] = "OK" if (
+            media_root.exists() and 
+            os.access(media_root, os.W_OK) and 
+            os.access(media_root, os.R_OK)
+        ) else "ISSUES DETECTED"
+        
+        if info["volume_mounting_status"] == "ISSUES DETECTED":
+            info["recommendations"] = [
+                "Check Railway dashboard → Volumes → Verify mount path is '/app/media'",
+                "Verify service is using the volume (should show in service settings)",
+                "Check that BASE_DIR resolves to '/app' in Railway",
+                "Ensure MEDIA_ROOT = BASE_DIR / 'media' in settings.py",
+            ]
+        
+        return JsonResponse(info, indent=2)
+    except Exception as e:
+        return JsonResponse({
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None
+        }, status=500)
+
+
+def test_volume_write(request):
+    """
+    Test endpoint to verify Railway volume is writable.
+    
+    This creates a test file in MEDIA_ROOT to verify the volume is working.
+    This can be called from the Server service to test if it can access the volume.
+    
+    Access: /test-volume-write/
+    
+    Also tests Celery access if ?test_celery=1 is provided.
+    """
+    import os
+    from pathlib import Path
+    from django.conf import settings
+    from django.utils import timezone
+    
+    result = {
+        "server_test": {},
+        "celery_test": {},
+    }
+    
+    # Test Server (Django) access
+    try:
+        media_root = Path(settings.MEDIA_ROOT)
+        
+        # Create test directory if needed
+        test_dir = media_root / ".volume_test"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write a test file with timestamp
+        test_file = test_dir / "test_write_server.txt"
+        test_content = f"Volume test - {timezone.now().isoformat()}\nService: Server (Django)\nMEDIA_ROOT: {media_root}"
+        test_file.write_text(test_content)
+        
+        # Verify we can read it back
+        read_back = test_file.read_text()
+        
+        # Get file stats
+        file_stats = test_file.stat()
+        
+        result["server_test"] = {
+            "success": True,
+            "message": "Volume write test successful",
+            "service": "Server (Django)",
+            "MEDIA_ROOT": str(media_root),
+            "test_file_path": str(test_file),
+            "test_file_exists": test_file.exists(),
+            "test_file_size": file_stats.st_size,
+            "test_file_readable": True,
+            "test_content_matches": read_back == test_content,
+            "timestamp": timezone.now().isoformat(),
+        }
+    except Exception as e:
+        result["server_test"] = {
+            "success": False,
+            "error": str(e),
+            "type": type(e).__name__,
+            "service": "Server (Django)",
+            "MEDIA_ROOT": str(Path(settings.MEDIA_ROOT)) if 'settings' in locals() else "unknown",
+            "recommendation": "If this fails, the volume may only be mounted on Celery. You may need to mount it on Server as well.",
+        }
+    
+    # Test Celery access if requested
+    if request.GET.get("test_celery") == "1":
+        try:
+            celery_task = test_volume_write_task.delay()
+            celery_result = celery_task.get(timeout=10)
+            result["celery_test"] = celery_result
+        except Exception as e:
+            result["celery_test"] = {
+                "success": False,
+                "error": str(e),
+                "type": type(e).__name__,
+                "service": "Celery Worker",
+                "recommendation": "Check that Celery worker is running and volume is mounted on Celery service.",
+            }
+    
+    # Overall status
+    server_ok = result["server_test"].get("success", False)
+    celery_ok = result.get("celery_test", {}).get("success", False) if "celery_test" in result else None
+    
+    if celery_ok is None:
+        # Only tested server
+        result["overall_status"] = "OK" if server_ok else "FAILED"
+        result["recommendation"] = "Server can access volume" if server_ok else "Server cannot access volume. Mount volume on Server service in Railway."
+    else:
+        # Tested both
+        if server_ok and celery_ok:
+            result["overall_status"] = "OK"
+            result["recommendation"] = "Both Server and Celery can access the volume. Setup is correct!"
+        elif not server_ok and celery_ok:
+            result["overall_status"] = "PARTIAL"
+            result["recommendation"] = "Celery can write, but Server cannot read. Mount the same volume on Server service in Railway."
+        elif server_ok and not celery_ok:
+            result["overall_status"] = "PARTIAL"
+            result["recommendation"] = "Server can access, but Celery cannot write. Check Celery volume mount in Railway."
+        else:
+            result["overall_status"] = "FAILED"
+            result["recommendation"] = "Neither service can access the volume. Check volume mount configuration in Railway."
+    
+    status_code = 200 if result["overall_status"] == "OK" else 500
+    return JsonResponse(result, indent=2, status=status_code)
 
 
 def home(request):

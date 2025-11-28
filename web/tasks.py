@@ -471,6 +471,68 @@ def get_task_status(pmid: str) -> Optional[Dict]:
         return None
 
 
+@shared_task(bind=True, name="web.tasks.test_volume_write_task")
+def test_volume_write_task(self) -> Dict:
+    """
+    Celery task to test if Railway volume is writable from Celery worker.
+    
+    This creates a test file in MEDIA_ROOT to verify the volume is working.
+    This can be called from Celery to test if it can write to the volume.
+    
+    Returns:
+        Dict with test results
+    """
+    from django.utils import timezone
+    
+    try:
+        output_path = Path(settings.MEDIA_ROOT)
+        
+        # Create test directory if needed
+        test_dir = output_path / ".volume_test"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write a test file with timestamp
+        test_file = test_dir / "test_write_celery.txt"
+        task_id = self.request.id if hasattr(self, 'request') else 'N/A'
+        test_content = f"Volume test - {timezone.now().isoformat()}\nService: Celery Worker\nMEDIA_ROOT: {output_path}\nTask ID: {task_id}"
+        test_file.write_text(test_content)
+        
+        # Verify we can read it back
+        read_back = test_file.read_text()
+        
+        # Get file stats
+        file_stats = test_file.stat()
+        
+        result = {
+            "success": True,
+            "message": "Volume write test successful from Celery",
+            "service": "Celery Worker",
+            "MEDIA_ROOT": str(output_path),
+            "test_file_path": str(test_file),
+            "test_file_exists": test_file.exists(),
+            "test_file_size": file_stats.st_size,
+            "test_file_readable": True,
+            "test_content_matches": read_back == test_content,
+            "task_id": task_id,
+            "timestamp": timezone.now().isoformat(),
+        }
+        
+        # Clean up test file (optional - leave it for debugging)
+        # test_file.unlink()
+        
+        return result
+    except Exception as e:
+        logger.exception(f"Volume write test failed in Celery: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "type": type(e).__name__,
+            "service": "Celery Worker",
+            "MEDIA_ROOT": str(Path(settings.MEDIA_ROOT)) if 'settings' in locals() else "unknown",
+            "recommendation": "Check that the volume is mounted on Celery service in Railway dashboard.",
+        }
+
+
 def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> None:
     """
     Update job progress in database based on file existence checks.

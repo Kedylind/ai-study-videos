@@ -146,7 +146,10 @@ if not DEBUG:
 
 # Media files for generated outputs (videos, audio, metadata)
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+# Allow MEDIA_ROOT to be overridden via environment variable (useful for Railway volumes)
+# Default: BASE_DIR / "media" (which resolves to /app/media in Railway containers)
+# For Railway volumes, mount the volume at /app/media and this will work automatically
+MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media"))) if os.getenv("MEDIA_ROOT") else BASE_DIR / "media"
 
 # Authentication settings
 LOGIN_URL = "/login/"
