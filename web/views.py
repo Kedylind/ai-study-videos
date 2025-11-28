@@ -337,6 +337,7 @@ def test_volume_write(request):
     Also tests Celery access if ?test_celery=1 is provided.
     """
     import os
+    import traceback
     from pathlib import Path
     from django.conf import settings
     from django.utils import timezone
@@ -348,7 +349,9 @@ def test_volume_write(request):
     
     # Test Server (Django) access
     try:
-        media_root = Path(settings.MEDIA_ROOT)
+        # Ensure MEDIA_ROOT is a Path object
+        media_root_str = str(settings.MEDIA_ROOT)
+        media_root = Path(media_root_str)
         
         # Create test directory if needed
         test_dir = media_root / ".volume_test"
@@ -370,6 +373,7 @@ def test_volume_write(request):
             "message": "Volume write test successful",
             "service": "Server (Django)",
             "MEDIA_ROOT": str(media_root),
+            "MEDIA_ROOT_type": type(settings.MEDIA_ROOT).__name__,
             "test_file_path": str(test_file),
             "test_file_exists": test_file.exists(),
             "test_file_size": file_stats.st_size,
@@ -378,12 +382,16 @@ def test_volume_write(request):
             "timestamp": timezone.now().isoformat(),
         }
     except Exception as e:
+        import sys
+        exc_type, exc_value, exc_traceback = sys.exc_info()
         result["server_test"] = {
             "success": False,
             "error": str(e),
             "type": type(e).__name__,
             "service": "Server (Django)",
-            "MEDIA_ROOT": str(Path(settings.MEDIA_ROOT)) if 'settings' in locals() else "unknown",
+            "MEDIA_ROOT": str(settings.MEDIA_ROOT) if hasattr(settings, 'MEDIA_ROOT') else "unknown",
+            "MEDIA_ROOT_type": type(settings.MEDIA_ROOT).__name__ if hasattr(settings, 'MEDIA_ROOT') else "unknown",
+            "traceback": ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
             "recommendation": "If this fails, the volume may only be mounted on Celery. You may need to mount it on Server as well.",
         }
     
@@ -403,29 +411,37 @@ def test_volume_write(request):
             }
     
     # Overall status
-    server_ok = result["server_test"].get("success", False)
-    celery_ok = result.get("celery_test", {}).get("success", False) if "celery_test" in result else None
-    
-    if celery_ok is None:
-        # Only tested server
-        result["overall_status"] = "OK" if server_ok else "FAILED"
-        result["recommendation"] = "Server can access volume" if server_ok else "Server cannot access volume. Mount volume on Server service in Railway."
-    else:
-        # Tested both
-        if server_ok and celery_ok:
-            result["overall_status"] = "OK"
-            result["recommendation"] = "Both Server and Celery can access the volume. Setup is correct!"
-        elif not server_ok and celery_ok:
-            result["overall_status"] = "PARTIAL"
-            result["recommendation"] = "Celery can write, but Server cannot read. Mount the same volume on Server service in Railway."
-        elif server_ok and not celery_ok:
-            result["overall_status"] = "PARTIAL"
-            result["recommendation"] = "Server can access, but Celery cannot write. Check Celery volume mount in Railway."
+    try:
+        server_ok = result.get("server_test", {}).get("success", False)
+        celery_test_result = result.get("celery_test", {})
+        celery_ok = celery_test_result.get("success", False) if celery_test_result else None
+        
+        if celery_ok is None:
+            # Only tested server
+            result["overall_status"] = "OK" if server_ok else "FAILED"
+            result["recommendation"] = "Server can access volume" if server_ok else "Server cannot access volume. Mount volume on Server service in Railway."
         else:
-            result["overall_status"] = "FAILED"
-            result["recommendation"] = "Neither service can access the volume. Check volume mount configuration in Railway."
+            # Tested both
+            if server_ok and celery_ok:
+                result["overall_status"] = "OK"
+                result["recommendation"] = "Both Server and Celery can access the volume. Setup is correct!"
+            elif not server_ok and celery_ok:
+                result["overall_status"] = "PARTIAL"
+                result["recommendation"] = "Celery can write, but Server cannot read. Mount the same volume on Server service in Railway."
+            elif server_ok and not celery_ok:
+                result["overall_status"] = "PARTIAL"
+                result["recommendation"] = "Server can access, but Celery cannot write. Check Celery volume mount in Railway."
+            else:
+                result["overall_status"] = "FAILED"
+                result["recommendation"] = "Neither service can access the volume. Check volume mount configuration in Railway."
+        
+        status_code = 200 if result.get("overall_status") == "OK" else 500
+    except Exception as e:
+        result["overall_status"] = "ERROR"
+        result["status_calculation_error"] = str(e)
+        result["recommendation"] = "Error calculating overall status. Check individual test results."
+        status_code = 500
     
-    status_code = 200 if result["overall_status"] == "OK" else 500
     return JsonResponse(result, indent=2, status=status_code)
 
 
