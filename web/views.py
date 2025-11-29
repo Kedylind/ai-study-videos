@@ -548,15 +548,25 @@ def debug_video_files(request, pmid: str):
                 "error": str(e),
             }
         
-        return JsonResponse(result, indent=2)
+        import json
+        response = JsonResponse(result)
+        response.content = json.dumps(result, indent=2)
+        return response
     except Exception as e:
         import sys
-        return JsonResponse({
+        error_response = JsonResponse({
             "error": str(e),
             "type": type(e).__name__,
             "traceback": traceback.format_exc(),
             "pmid": pmid,
         }, status=500)
+        error_response.content = json.dumps({
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": traceback.format_exc(),
+            "pmid": pmid,
+        }, indent=2)
+        return error_response
 
 
 def home(request):
