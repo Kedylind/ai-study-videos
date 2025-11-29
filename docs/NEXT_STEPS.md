@@ -18,13 +18,264 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 - ✅ Database models for job tracking implemented
 - ✅ "My Videos" archive page implemented
 - ⚠️ Progress tracking implemented but unreliable (needs real-time parsing fix)
+- 🔴 **CRITICAL BUG:** Video download link missing on status page when pipeline completes
 - 🔴 **BLOCKER:** Cloud storage not implemented - videos lost on Railway container restarts
 
 ---
 
 ## 🚀 High Priority (Production Readiness)
 
-### 1. ⚠️ CRITICAL: Implement Persistent Video Storage with Railway Volumes
+### 1. 🔴 CRITICAL: Fix Missing Video Download Link on Status Page
+**Status:** Not implemented  
+**Priority:** 🔴 **CRITICAL - Users cannot access completed videos**  
+**Estimated Effort:** 1-2 hours
+
+**PROBLEM:**
+- When pipeline completes (100% progress, all steps done), the status page shows completion
+- **BUT:** No video download/play button is visible
+- Users cannot access their completed videos from the status page
+- This is a critical UX issue - users generate videos but can't access them
+
+**Root Cause:**
+- The template checks `{% if final_video_exists %}` but this might be False even when video exists
+- The JavaScript checks for `data.final_video_url` in JSON response, but it might not be set correctly
+- The JSON endpoint uses `MEDIA_URL` instead of the `serve_video` endpoint
+- When status is "completed" from database, the file existence check might not run properly
+
+**Solution: Fix Video Detection and URL Generation**
+
+---
+
+## Step-by-Step Fix
+
+### Step 1: Fix JSON Response to Always Include Video URL When Complete
+
+**File:** `web/views.py` - `pipeline_status()` function
+
+**Current code (around line 1029-1030):**
+```python
+"final_video_url": (
+    f"{settings.MEDIA_URL}{pmid}/final_video.mp4" if final_video.exists() else None
+),
+```
+
+**Problem:** Uses `MEDIA_URL` which might not work in production. Should use `serve_video` endpoint.
+
+**Fix:**
+```python
+# In the JSON response section (around line 1023-1056)
+if request.GET.get("_json"):
+    # ... existing code ...
+    
+    # Fix: Always check file existence and use serve_video endpoint
+    final_video_url = None
+    if final_video.exists():
+        from django.urls import reverse
+        final_video_url = reverse("serve_video", args=[pmid])
+    
+    status = {
+        "pmid": pmid,
+        "exists": output_dir.exists(),
+        "final_video": final_video.exists(),
+        "final_video_url": final_video_url,  # Use serve_video endpoint
+        "status": progress.get("status", "pending"),
+        "current_step": progress.get("current_step"),
+        "completed_steps": progress.get("completed_steps", []),
+        "progress_percent": progress.get("progress_percent", 0),
+    }
+    
+    # CRITICAL FIX: If status is completed or progress is 100%, ensure final_video_url is set
+    if (status["status"] == "completed" or status["progress_percent"] >= 100):
+        if final_video.exists() and not final_video_url:
+            from django.urls import reverse
+            final_video_url = reverse("serve_video", args=[pmid])
+            status["final_video_url"] = final_video_url
+            status["final_video"] = True
+```
+
+---
+
+### Step 2: Fix HTML Context to Always Check File Existence
+
+**File:** `web/views.py` - `pipeline_status()` function (HTML rendering section)
+
+**Current code (around line 1074-1087):**
+```python
+# Use dedicated video endpoint if video exists, otherwise use media URL
+if final_video.exists():
+    from django.urls import reverse
+    final_video_url = reverse("serve_video", args=[pmid])
+else:
+    final_video_url = f"{settings.MEDIA_URL}{pmid}/final_video.mp4"
+
+context = {
+    "pmid": pmid,
+    "final_video_exists": final_video.exists(),
+    "final_video_url": final_video_url,
+    "log_tail": log_tail,
+    "progress": progress,
+    "error_message": error_message,
+}
+```
+
+**Problem:** If progress shows 100% but `final_video.exists()` returns False (file system issue), video section won't show.
+
+**Fix:**
+```python
+# CRITICAL FIX: If progress is 100% or status is completed, check file again
+final_video_exists = final_video.exists()
+if (progress.get("progress_percent", 0) >= 100 or progress.get("status") == "completed"):
+    # Double-check file existence - might have been created after initial check
+    final_video_exists = final_video.exists()
+    # If still doesn't exist, check if job says it's completed
+    if not final_video_exists:
+        try:
+            from web.models import VideoGenerationJob
+            job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            if job and job.status == 'completed' and job.final_video_path:
+                # Job says completed, try to construct path from job record
+                final_video_path = Path(job.final_video_path)
+                if final_video_path.exists():
+                    final_video_exists = True
+        except:
+            pass
+
+# Use dedicated video endpoint if video exists
+if final_video_exists:
+    from django.urls import reverse
+    final_video_url = reverse("serve_video", args=[pmid])
+else:
+    final_video_url = None  # Don't set invalid URL
+
+context = {
+    "pmid": pmid,
+    "final_video_exists": final_video_exists,  # Use the checked value
+    "final_video_url": final_video_url,
+    "log_tail": log_tail,
+    "progress": progress,
+    "error_message": error_message,
+}
+```
+
+---
+
+### Step 3: Fix JavaScript to Show Video Section When Complete
+
+**File:** `web/templates/status.html`
+
+**Current code (around line 158):**
+```javascript
+if ((data.status === 'completed' || data.final_video) && data.final_video_url) {
+```
+
+**Problem:** Logic might not catch all cases where video is ready.
+
+**Fix:**
+```javascript
+// Update status alert
+const statusContainer = document.getElementById('status-alert-container');
+if (statusContainer) {
+    // Check if video exists - multiple conditions
+    const videoReady = (
+        (data.status === 'completed' && data.final_video_url) ||
+        (data.progress_percent >= 100 && data.final_video_url) ||
+        (data.final_video === true && data.final_video_url)
+    );
+    
+    if (videoReady) {
+        // Video is ready - show success message
+        statusContainer.innerHTML = `
+            <div class="alert alert-info" style="background-color: #e8f5e9; border: 2px solid #4CAF50; border-radius: 8px; padding: 1.5em;">
+                <h3 style="margin-top: 0; color: #2e7d32;">🎬 Video Ready!</h3>
+                <p style="font-size: 1.1em; margin-bottom: 1em;">Your video has been successfully generated and is ready to download or play.</p>
+                <div class="button-group" style="display: flex; gap: 1em; flex-wrap: wrap;">
+                    <a href="${data.final_video_url}" class="btn-primary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #2196F3; color: white; border-radius: 4px; font-weight: bold;">▶️ Play/Download Video</a>
+                    <a href="/result/${pmid}" class="btn-secondary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #757575; color: white; border-radius: 4px;">📄 View Result Page</a>
+                </div>
+            </div>
+        `;
+        
+        // Also show the static video section if it exists
+        const videoSection = document.querySelector('[data-video-section]');
+        if (videoSection) {
+            videoSection.style.display = 'block';
+        }
+        
+        isCompleted = true;
+        stopPolling();
+    } else if (data.status === 'failed') {
+        // ... existing error handling ...
+    }
+}
+```
+
+---
+
+### Step 4: Add Fallback Video Section That Always Shows When Complete
+
+**File:** `web/templates/status.html`
+
+**Add this after the progress section (around line 86):**
+
+```html
+<!-- Video Section - Always show when progress is 100% -->
+{% if progress.progress_percent >= 100 %}
+<div id="video-section-fallback" data-video-section style="background-color: #e8f5e9; border: 2px solid #4CAF50; border-radius: 8px; padding: 1.5em; margin: 1.5em 0;">
+    <h2 style="margin-top: 0; color: #2e7d32;">🎬 Video Ready!</h2>
+    <p style="font-size: 1.1em; margin-bottom: 1em;">Your video has been successfully generated.</p>
+    {% if final_video_exists and final_video_url %}
+    <div class="button-group" style="display: flex; gap: 1em; flex-wrap: wrap;">
+        <a href="{{ final_video_url }}" class="btn-primary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #2196F3; color: white; border-radius: 4px; font-weight: bold;">▶️ Play/Download Video</a>
+        <a href="/result/{{ pmid }}" class="btn-secondary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #757575; color: white; border-radius: 4px;">📄 View Result Page</a>
+    </div>
+    {% else %}
+    <p style="color: #f57c00;">Video file is being processed. Please refresh the page in a moment.</p>
+    <a href="/result/{{ pmid }}" class="btn-secondary">Try Result Page</a>
+    {% endif %}
+</div>
+{% endif %}
+```
+
+---
+
+## Testing Checklist
+
+- [ ] Generate a video and wait for completion
+- [ ] Check status page - video download button should be visible
+- [ ] Click "Play/Download Video" - should open video
+- [ ] Check JSON endpoint (`/status/<pmid>/?_json=1`) - should have `final_video_url`
+- [ ] Refresh page after completion - video section should still show
+- [ ] Test with video that exists but status wasn't updated - should still show
+- [ ] Test error case - video doesn't exist but status says completed
+
+---
+
+## Expected Result
+
+After fix:
+- ✅ When pipeline completes (100% progress), video download button appears immediately
+- ✅ Video section is visible on status page
+- ✅ "Play/Download Video" button works correctly
+- ✅ JSON response includes `final_video_url` when video is ready
+- ✅ Works even if file system check has timing issues
+- ✅ Fallback section shows if JavaScript doesn't update
+
+---
+
+## Files to Modify
+
+1. **`web/views.py`**:
+   - Fix JSON response to use `serve_video` endpoint
+   - Add better file existence checking when status is completed
+   - Ensure `final_video_url` is always set when video exists
+
+2. **`web/templates/status.html`**:
+   - Fix JavaScript video detection logic
+   - Add fallback video section that shows when progress is 100%
+
+---
+
+### 2. ⚠️ CRITICAL: Implement Persistent Video Storage with Railway Volumes
 **Status:** Not implemented  
 **Priority:** 🔴 **CRITICAL - BLOCKING PRODUCTION**  
 **Estimated Effort:** 1-2 hours
@@ -287,7 +538,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 2. Fix Progress Tracking - Real-Time Pipeline Output Parsing
+### 3. Fix Progress Tracking - Real-Time Pipeline Output Parsing
 **Status:** Not implemented  
 **Priority:** 🔴 **CRITICAL - Progress tracking not working reliably**  
 **Estimated Effort:** 2-3 hours
@@ -668,7 +919,7 @@ finally:
 
 ---
 
-### 3. Celery Production Deployment
+### 4. Celery Production Deployment
 **Status:** UI exists, backend processing incomplete  
 **Priority:** 🟠 High  
 **Estimated Effort:** 3-4 hours
@@ -714,7 +965,7 @@ finally:
 
 ## 📋 Medium Priority (Feature Enhancements)
 
-### 4. Complete File Upload Feature
+### 5. Complete File Upload Feature
 **Status:** UI exists, backend processing incomplete  
 **Priority:** 🟠 High  
 **Estimated Effort:** 3-4 hours
@@ -756,7 +1007,7 @@ finally:
 
 ---
 
-### 5. Add Video Deletion to "My Videos" Page
+### 6. Add Video Deletion to "My Videos" Page
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 2-3 hours
@@ -867,7 +1118,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 6. Video Management UI (Full Admin View)
+### 7. Video Management UI (Full Admin View)
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 4-5 hours
@@ -888,7 +1139,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 7. Error Monitoring & Logging
+### 8. Error Monitoring & Logging
 **Status:** Basic logging exists  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -907,7 +1158,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 8. Rate Limiting & API Quota Management
+### 9. Rate Limiting & API Quota Management
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -928,7 +1179,7 @@ def delete_video(request, paper_id: str):
 
 ## 🔧 Low Priority (Nice to Have)
 
-### 9. Email Verification
+### 10. Email Verification
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -941,7 +1192,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 10. Password Reset
+### 11. Password Reset
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -954,7 +1205,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 11. User Profiles
+### 12. User Profiles
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 3-4 hours
@@ -967,7 +1218,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 12. Django Admin Configuration
+### 13. Django Admin Configuration
 **Status:** Basic admin, not customized  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 1-2 hours
@@ -982,7 +1233,7 @@ def delete_video(request, paper_id: str):
 
 ## 📚 Documentation Tasks
 
-### 13. Deployment Guide
+### 14. Deployment Guide
 **Status:** Partial (Railway setup exists)  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 2-3 hours
@@ -996,7 +1247,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 14. Architecture Documentation
+### 15. Architecture Documentation
 **Status:** Not created  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -1011,7 +1262,7 @@ def delete_video(request, paper_id: str):
 
 ## 🧪 Testing & Quality
 
-### 15. Add Unit Tests
+### 16. Add Unit Tests
 **Status:** No tests exist  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 6-8 hours
@@ -1025,7 +1276,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 16. Real-Time Status Updates (WebSockets/SSE)
+### 17. Real-Time Status Updates (WebSockets/SSE)
 **Status:** Not implemented  
 **Priority:** 🟢 Low (Nice to Have)  
 **Estimated Effort:** 4-6 hours
@@ -1064,7 +1315,7 @@ def delete_video(request, paper_id: str):
 
 ---
 
-### 17. Error Handling Improvements
+### 18. Error Handling Improvements
 **Status:** Basic error handling  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -1080,6 +1331,7 @@ def delete_video(request, paper_id: str):
 ## 📊 Progress Tracking
 
 ### In Progress 🚧
+- [ ] **Fix missing video download link on status page (CRITICAL - users can't access videos)**
 - [ ] **Cloud storage integration (CRITICAL - blocking production)**
 - [ ] **Fix progress tracking - implement real-time pipeline output parsing**
 - [ ] Celery production deployment (Redis setup on Railway)
@@ -1101,10 +1353,11 @@ def delete_video(request, paper_id: str):
 ## 🎯 Recommended Implementation Order
 
 **Sprint 1 (Production Readiness - URGENT):**
-1. 🔴 **Fix progress tracking - real-time pipeline output parsing (CRITICAL)**
-2. 🔴 **Cloud storage integration (CRITICAL - DO THIS NEXT)**
-3. Celery production deployment (Redis setup on Railway)
-4. Complete file upload feature
+1. 🔴 **Fix missing video download link on status page (CRITICAL - DO THIS FIRST)**
+2. 🔴 **Fix progress tracking - real-time pipeline output parsing (CRITICAL)**
+3. 🔴 **Cloud storage integration (CRITICAL - DO THIS NEXT)**
+4. Celery production deployment (Redis setup on Railway)
+5. Complete file upload feature
 
 **Sprint 2 (Core Features):**
 5. Add video deletion to "My Videos" page

@@ -1022,18 +1022,51 @@ def pipeline_status(request, pmid: str):
 
     if request.GET.get("_json"):
         # JSON status endpoint - use the new progress tracking
+        # Fix: Always check file existence and use serve_video endpoint
+        final_video_url = None
+        final_video_exists = final_video.exists()
+        
+        if final_video_exists:
+            from django.urls import reverse
+            final_video_url = reverse("serve_video", args=[pmid])
+        
         status = {
             "pmid": pmid,
             "exists": output_dir.exists(),
-            "final_video": final_video.exists(),
-            "final_video_url": (
-                f"{settings.MEDIA_URL}{pmid}/final_video.mp4" if final_video.exists() else None
-            ),
+            "final_video": final_video_exists,
+            "final_video_url": final_video_url,  # Use serve_video endpoint
             "status": progress.get("status", "pending"),
             "current_step": progress.get("current_step"),
             "completed_steps": progress.get("completed_steps", []),
             "progress_percent": progress.get("progress_percent", 0),
         }
+        
+        # CRITICAL FIX: If status is completed or progress is 100%, ensure final_video_url is set
+        if (status["status"] == "completed" or status["progress_percent"] >= 100):
+            # Double-check file existence - might have been created after initial check
+            if final_video.exists() and not final_video_url:
+                from django.urls import reverse
+                final_video_url = reverse("serve_video", args=[pmid])
+                status["final_video_url"] = final_video_url
+                status["final_video"] = True
+            # Also check database job record if file doesn't exist
+            elif not final_video.exists():
+                try:
+                    from web.models import VideoGenerationJob
+                    if request.user.is_authenticated:
+                        job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+                    else:
+                        job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+                    if job and job.status == 'completed' and job.final_video_path:
+                        # Job says completed, try to construct path from job record
+                        final_video_path = Path(job.final_video_path)
+                        if final_video_path.exists():
+                            from django.urls import reverse
+                            final_video_url = reverse("serve_video", args=[pmid])
+                            status["final_video_url"] = final_video_url
+                            status["final_video"] = True
+                except Exception:
+                    pass
         
         # Add error information if available
         if "error" in progress:
@@ -1053,7 +1086,10 @@ def pipeline_status(request, pmid: str):
                 data = ""
             status["log_tail"] = data
 
-        return JsonResponse(status)
+        import json
+        response = JsonResponse(status)
+        response.content = json.dumps(status, indent=2)
+        return response
 
     # Render an HTML status page
     log_tail = ""
@@ -1070,16 +1106,37 @@ def pipeline_status(request, pmid: str):
     if progress.get("error_type"):
         error_message = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
 
-    # Use dedicated video endpoint if video exists, otherwise use media URL
-    if final_video.exists():
+    # CRITICAL FIX: If progress is 100% or status is completed, check file again
+    final_video_exists = final_video.exists()
+    if (progress.get("progress_percent", 0) >= 100 or progress.get("status") == "completed"):
+        # Double-check file existence - might have been created after initial check
+        final_video_exists = final_video.exists()
+        # If still doesn't exist, check if job says it's completed
+        if not final_video_exists:
+            try:
+                from web.models import VideoGenerationJob
+                if request.user.is_authenticated:
+                    job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+                else:
+                    job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+                if job and job.status == 'completed' and job.final_video_path:
+                    # Job says completed, try to construct path from job record
+                    final_video_path = Path(job.final_video_path)
+                    if final_video_path.exists():
+                        final_video_exists = True
+            except Exception:
+                pass
+
+    # Use dedicated video endpoint if video exists
+    if final_video_exists:
         from django.urls import reverse
         final_video_url = reverse("serve_video", args=[pmid])
     else:
-        final_video_url = f"{settings.MEDIA_URL}{pmid}/final_video.mp4"
+        final_video_url = None  # Don't set invalid URL
     
     context = {
         "pmid": pmid,
-        "final_video_exists": final_video.exists(),
+        "final_video_exists": final_video_exists,  # Use the checked value
         "final_video_url": final_video_url,
         "log_tail": log_tail,
         "progress": progress,
