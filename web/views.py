@@ -459,6 +459,66 @@ def test_volume_write(request):
     return response
 
 
+def debug_video_files(request, pmid: str):
+    """
+    Debug endpoint to list all files in the video output directory.
+    
+    This helps diagnose issues where the video file might not be detected
+    even though the pipeline completed successfully.
+    
+    Access: /debug-video-files/<pmid>/
+    """
+    from pathlib import Path
+    from django.conf import settings
+    from django.http import JsonResponse
+    
+    output_dir = Path(settings.MEDIA_ROOT) / pmid
+    result = {
+        "pmid": pmid,
+        "output_dir": str(output_dir),
+        "output_dir_exists": output_dir.exists(),
+        "MEDIA_ROOT": str(settings.MEDIA_ROOT),
+        "files": [],
+        "directories": [],
+    }
+    
+    if output_dir.exists():
+        # List all files recursively
+        for file_path in output_dir.rglob("*"):
+            if file_path.is_file():
+                try:
+                    stat = file_path.stat()
+                    result["files"].append({
+                        "path": str(file_path.relative_to(output_dir)),
+                        "full_path": str(file_path),
+                        "exists": file_path.exists(),
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                    })
+                except Exception as e:
+                    result["files"].append({
+                        "path": str(file_path.relative_to(output_dir)),
+                        "full_path": str(file_path),
+                        "exists": file_path.exists(),
+                        "error": str(e),
+                    })
+        
+        # List directories
+        for dir_path in output_dir.rglob("*"):
+            if dir_path.is_dir():
+                result["directories"].append(str(dir_path.relative_to(output_dir)))
+    
+    # Check specifically for final_video.mp4
+    final_video = output_dir / "final_video.mp4"
+    result["final_video_check"] = {
+        "expected_path": str(final_video),
+        "exists": final_video.exists(),
+        "size": final_video.stat().st_size if final_video.exists() else 0,
+    }
+    
+    return JsonResponse(result, indent=2)
+
+
 def home(request):
     # Render the beautiful landing page
     return render(request, "landing.html")

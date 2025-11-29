@@ -2,7 +2,7 @@ from django.contrib.auth.views import LoginView, LogoutView
 from django.urls import path
 from .views import (
     home, health, static_debug, debug_media_path, test_volume_write, upload_paper, pipeline_status, pipeline_result, register,
-    api_start_generation, api_status, api_result, serve_video, my_videos
+    api_start_generation, api_status, api_result, serve_video, my_videos, debug_video_files
 )
 
 urlpatterns = [
@@ -11,6 +11,7 @@ urlpatterns = [
     path("static-debug/", static_debug, name="static_debug"),
     path("debug-media/", debug_media_path, name="debug_media"),
     path("test-volume-write/", test_volume_write, name="test_volume_write"),
+    path("debug-video-files/<str:pmid>/", debug_video_files, name="debug_video_files"),
     path("upload/", upload_paper, name="upload_paper"),
     path("my-videos/", my_videos, name="my_videos"),
     path("status/<str:pmid>/", pipeline_status, name="pipeline_status"),
