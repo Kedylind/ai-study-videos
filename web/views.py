@@ -793,6 +793,7 @@ def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = 
         f.write(task.id)
     
     # Create or update database job record
+    # This ensures the job exists in the database immediately, even before the Celery task starts
     if user_id:
         try:
             from django.contrib.auth.models import User
@@ -806,19 +807,27 @@ def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = 
                         'paper_id': pmid,
                         'status': 'pending',
                         'progress_percent': 0,
+                        'current_step': None,
                     }
                 )
                 if not created:
-                    # Update existing job
+                    # Update existing job (shouldn't happen, but handle it gracefully)
                     job.status = 'pending'
                     job.progress_percent = 0
-                    job.save(update_fields=['status', 'progress_percent', 'updated_at'])
+                    job.current_step = None
+                    job.paper_id = pmid  # Update paper_id in case it changed
+                    job.save(update_fields=['status', 'progress_percent', 'current_step', 'paper_id', 'updated_at'])
+                logger.info(f"Created/updated job record for {pmid} with task_id {task.id}")
             except User.DoesNotExist:
-                pass  # User doesn't exist, skip database tracking
+                logger.warning(f"User {user_id} does not exist, skipping database job tracking")
+            except Exception as db_error:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to create/update job record in database: {db_error}", exc_info=True)
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to create job record: {e}")
+            logger.error(f"Failed to create job record: {e}", exc_info=True)
     
     # Task is now queued and will be processed by a Celery worker
     # Status can be checked via the task ID (Celery result backend) or by reading the task_result.json file
