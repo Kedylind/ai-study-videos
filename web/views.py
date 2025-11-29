@@ -472,16 +472,54 @@ def debug_video_files(request, pmid: str):
     from django.conf import settings
     from django.http import JsonResponse
     import traceback
+    import os
+    import subprocess
     
     try:
         media_root = Path(settings.MEDIA_ROOT)
         output_dir = media_root / pmid
+        
+        # Check if MEDIA_ROOT is actually on a mounted volume
+        volume_info = {}
+        try:
+            # Check filesystem info
+            stat_info = os.statvfs(str(media_root))
+            volume_info["filesystem"] = {
+                "f_fsid": stat_info.f_fsid,
+                "f_type": stat_info.f_type,  # Filesystem type
+                "total_space_gb": (stat_info.f_blocks * stat_info.f_frsize) / (1024**3),
+                "free_space_gb": (stat_info.f_bavail * stat_info.f_frsize) / (1024**3),
+            }
+            
+            # Try to check if it's a mount point using df command
+            try:
+                df_result = subprocess.run(
+                    ["df", "-T", str(media_root)],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if df_result.returncode == 0:
+                    lines = df_result.stdout.strip().split('\n')
+                    if len(lines) > 1:
+                        parts = lines[1].split()
+                        if len(parts) >= 2:
+                            volume_info["mount_info"] = {
+                                "filesystem_type": parts[1],
+                                "mount_point": parts[-1] if len(parts) > 1 else "unknown",
+                            }
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+                volume_info["mount_check_error"] = str(e)
+        except Exception as e:
+            volume_info["error"] = str(e)
+        
         result = {
             "pmid": pmid,
             "output_dir": str(output_dir),
             "output_dir_exists": output_dir.exists(),
             "MEDIA_ROOT": str(media_root),
             "MEDIA_ROOT_exists": media_root.exists(),
+            "volume_info": volume_info,
             "files": [],
             "directories": [],
             "media_root_contents": [],  # List everything in MEDIA_ROOT
@@ -543,6 +581,23 @@ def debug_video_files(request, pmid: str):
                         })
             except Exception as e:
                 result["media_root_scan_error"] = str(e)
+        
+        # Check if we can see files written by Celery (the real volume test)
+        celery_test_dir = media_root / ".volume_test"
+        celery_test_file = celery_test_dir / "test_write_celery.txt"
+        result["celery_file_check"] = {
+            "test_dir_exists": celery_test_dir.exists(),
+            "test_file_exists": celery_test_file.exists(),
+            "test_file_path": str(celery_test_file),
+        }
+        if celery_test_file.exists():
+            try:
+                celery_content = celery_test_file.read_text()
+                result["celery_file_check"]["readable"] = True
+                result["celery_file_check"]["content_preview"] = celery_content[:200]
+            except Exception as e:
+                result["celery_file_check"]["readable"] = False
+                result["celery_file_check"]["read_error"] = str(e)
         
         if output_dir.exists():
             try:
