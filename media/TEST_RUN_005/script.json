@@ -1,0 +1,10 @@
+{
+  "scenes": [
+    {
+      "scene_number": 0,
+      "narration": "Test scene narration for status testing.",
+      "visual_description": "A test visual description"
+    }
+  ],
+  "generated_at": "2025-11-25T22:54:33.867184+00:00"
+}

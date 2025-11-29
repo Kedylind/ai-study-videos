@@ -54,8 +54,9 @@ except ImportError:
 # ============================================================================
 
 # Debug Mode
-# Default to False for production safety - explicitly set DEBUG=True for local development
-DEBUG = os.getenv("DEBUG", "False") == "True"
+# Default to True for local development, False for production
+# Can be overridden with DEBUG environment variable
+DEBUG = os.getenv("DEBUG", "True") == "True"
 
 # Django Secret Key
 # Generate with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
@@ -79,6 +80,12 @@ if not DEBUG and SECRET_KEY == "dev-secret-not-for-production":
 # Generate a strong code: python -c "import secrets; print(secrets.token_urlsafe(32))"
 VIDEO_ACCESS_CODE = os.getenv("VIDEO_ACCESS_CODE", None)
 
+# Simulation Mode
+# When enabled, video generation tasks will simulate progress instead of running the actual pipeline
+# This is useful for testing the status update system without incurring API costs
+# Set SIMULATION_MODE=True in your .env file or environment to enable
+SIMULATION_MODE = os.getenv("SIMULATION_MODE", "False") == "True"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -91,7 +98,6 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -99,6 +105,11 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# Only use WhiteNoise in production (DEBUG=False)
+# In development, Django's staticfiles app handles static files automatically
+if not DEBUG:
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [
@@ -129,11 +140,52 @@ DATABASES = {
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 # Use CompressedStaticFilesStorage (not Manifest) for simpler deployment
-STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
+# Only use WhiteNoise storage in production; in development, use default storage
+if not DEBUG:
+    STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 
 # Media files for generated outputs (videos, audio, metadata)
-MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+# Cloud Storage Configuration (Cloudflare R2)
+USE_CLOUD_STORAGE = os.getenv("USE_CLOUD_STORAGE", "False") == "True"
+
+if USE_CLOUD_STORAGE:
+    # Cloudflare R2 (S3-compatible)
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")  # R2 endpoint
+    AWS_S3_REGION_NAME = "auto"  # R2 uses "auto"
+    
+    # Security & performance
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = "public-read"  # Videos are public (or use "private" for signed URLs)
+    AWS_S3_OBJECT_PARAMETERS = {
+        "CacheControl": "max-age=86400",  # 1 day cache
+    }
+    
+    # Storage settings - Use STORAGES dict for Django 4.2+ (also works with DEFAULT_FILE_STORAGE for backward compat)
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    # Also set DEFAULT_FILE_STORAGE for backward compatibility
+    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+    
+    # Media files will be stored in R2
+    # django-storages will handle URL construction automatically based on AWS_S3_ENDPOINT_URL
+    # For public access, R2 uses: https://<bucket-name>.<account-id>.r2.cloudflarestorage.com
+    # But django-storages constructs URLs automatically, so we don't need to set MEDIA_URL manually
+    
+    # MEDIA_ROOT is not used when using cloud storage, but keep it for compatibility
+    MEDIA_ROOT = BASE_DIR / "media"
+else:
+    # Fallback to local storage (for development)
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = BASE_DIR / "media"
 
 # Authentication settings
 LOGIN_URL = "/login/"

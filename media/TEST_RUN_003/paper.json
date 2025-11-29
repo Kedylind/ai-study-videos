@@ -1,0 +1,10 @@
+{
+  "pmid": "TEST_RUN_003",
+  "title": "Test Paper Title",
+  "authors": [
+    "Test Author 1",
+    "Test Author 2"
+  ],
+  "abstract": "This is a test abstract for status update testing.",
+  "fetched_at": "2025-11-25T22:54:10.430446+00:00"
+}

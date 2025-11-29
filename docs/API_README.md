@@ -1,6 +1,6 @@
 # Hidden Hill Video Generation API
 
-This document describes the REST API for generating videos from PubMed papers using the kyle-code pipeline.
+This document describes the REST API for generating videos from PubMed papers using the video generation pipeline.
 
 ## Prerequisites
 

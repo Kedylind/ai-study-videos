@@ -37,6 +37,33 @@
     {% endif %}
   </div>
 
+  <!-- Video Download Section (shown when video exists) -->
+  {% if final_video_exists %}
+  <div data-video-section style="background-color: #e8f5e9; border: 2px solid #4CAF50; border-radius: 8px; padding: 1.5em; margin: 1.5em 0;">
+    <h2 style="margin-top: 0; color: #2e7d32;">🎬 Video Ready!</h2>
+    <p style="font-size: 1.1em; margin-bottom: 1em;">Your video has been successfully generated and is ready to download or play.</p>
+    <div class="button-group" style="display: flex; gap: 1em; flex-wrap: wrap;">
+      <a href="{{ final_video_url }}" class="btn-primary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #2196F3; color: white; border-radius: 4px; font-weight: bold;">▶️ Play/Download Video</a>
+      <a href="/result/{{ pmid }}" class="btn-secondary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #757575; color: white; border-radius: 4px;">📄 View Result Page</a>
+    </div>
+  </div>
+  {% elif progress.progress_percent >= 100 %}
+  <!-- Video Section - Fallback that shows when progress is 100% but video not detected yet -->
+  <div id="video-section-fallback" data-video-section style="background-color: #e8f5e9; border: 2px solid #4CAF50; border-radius: 8px; padding: 1.5em; margin: 1.5em 0;">
+    <h2 style="margin-top: 0; color: #2e7d32;">🎬 Video Ready!</h2>
+    <p style="font-size: 1.1em; margin-bottom: 1em;">Your video has been successfully generated.</p>
+    {% if final_video_url %}
+    <div class="button-group" style="display: flex; gap: 1em; flex-wrap: wrap;">
+      <a href="{{ final_video_url }}" class="btn-primary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #2196F3; color: white; border-radius: 4px; font-weight: bold;">▶️ Play/Download Video</a>
+      <a href="/result/{{ pmid }}" class="btn-secondary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #757575; color: white; border-radius: 4px;">📄 View Result Page</a>
+    </div>
+    {% else %}
+    <p style="color: #f57c00;">Video file is being processed. Please refresh the page in a moment.</p>
+    <a href="/result/{{ pmid }}" class="btn-secondary">Try Result Page</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <!-- Progress Information -->
   <h2>Progress</h2>
   <div id="progress-container" style="margin: 1em 0;">
@@ -44,6 +71,12 @@
       <div id="progress-bar" style="background-color: #4CAF50; height: 24px; border-radius: 4px; width: {{ progress.progress_percent }}%; transition: width 0.3s;"></div>
     </div>
     <p><strong id="progress-text">{{ progress.progress_percent }}%</strong> complete (<span id="completed-count">{{ progress.completed_steps|length }}</span> of <span id="total-steps">{{ progress.total_steps }}</span> steps)</p>
+    
+    {% if final_video_exists and progress.progress_percent >= 100 %}
+    <div style="margin-top: 1em; padding: 1em; background-color: #f0f8ff; border-left: 4px solid #2196F3; border-radius: 4px;">
+      <p style="margin: 0;"><strong>✅ All steps completed!</strong> Your video is ready. Use the download button above to access it.</p>
+    </div>
+    {% endif %}
     
     <div id="current-step-container">
       {% if progress.current_step %}
@@ -136,16 +169,32 @@
           // Update status alert
           const statusContainer = document.getElementById('status-alert-container');
           if (statusContainer) {
-            if (data.status === 'completed' && data.final_video_url) {
+            // Check if video exists - multiple conditions
+            const videoReady = (
+              (data.status === 'completed' && data.final_video_url) ||
+              (data.progress_percent >= 100 && data.final_video_url) ||
+              (data.final_video === true && data.final_video_url)
+            );
+            
+            if (videoReady) {
+              // Video is ready - show success message
               statusContainer.innerHTML = `
-                <div class="alert alert-info">
-                  <p><strong>Final video ready!</strong></p>
-                  <div class="button-group">
-                    <a href="${data.final_video_url}" class="btn-primary">Download/Play</a>
-                    <a href="/result/${pmid}" class="btn-secondary">Open result page</a>
+                <div class="alert alert-info" style="background-color: #e8f5e9; border: 2px solid #4CAF50; border-radius: 8px; padding: 1.5em;">
+                  <h3 style="margin-top: 0; color: #2e7d32;">🎬 Video Ready!</h3>
+                  <p style="font-size: 1.1em; margin-bottom: 1em;">Your video has been successfully generated and is ready to download or play.</p>
+                  <div class="button-group" style="display: flex; gap: 1em; flex-wrap: wrap;">
+                    <a href="${data.final_video_url}" class="btn-primary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #2196F3; color: white; border-radius: 4px; font-weight: bold;">▶️ Play/Download Video</a>
+                    <a href="/result/${pmid}" class="btn-secondary" style="padding: 0.75em 1.5em; font-size: 1.1em; text-decoration: none; background-color: #757575; color: white; border-radius: 4px;">📄 View Result Page</a>
                   </div>
                 </div>
               `;
+              
+              // Also show the static video section if it exists
+              const videoSection = document.querySelector('[data-video-section]');
+              if (videoSection) {
+                videoSection.style.display = 'block';
+              }
+              
               isCompleted = true;
               stopPolling();
             } else if (data.status === 'failed') {

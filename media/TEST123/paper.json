@@ -1,0 +1,10 @@
+{
+  "pmid": "TEST123",
+  "title": "Simulated Paper Title",
+  "authors": [
+    "Simulated Author 1",
+    "Simulated Author 2"
+  ],
+  "abstract": "This is a simulated paper for testing status updates.",
+  "fetched_at": "2025-11-25T22:47:40.270664+00:00"
+}
