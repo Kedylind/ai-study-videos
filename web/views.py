@@ -819,7 +819,27 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
     
     # Priority 0: Check if final video exists (completed) - this is the most definitive check
     # Check this FIRST before anything else - if video exists, we're done
-    if output_dir.exists() and final_video.exists():
+    # Check both local filesystem and R2 storage
+    video_exists = False
+    if settings.USE_CLOUD_STORAGE:
+        # Check R2 storage via database
+        try:
+            from web.models import VideoGenerationJob
+            pmid = output_dir.name
+            job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            if job and job.final_video:
+                try:
+                    video_exists = job.final_video.storage.exists(job.final_video.name)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+    # Fallback to local filesystem check
+    if not video_exists:
+        video_exists = output_dir.exists() and final_video.exists()
+    
+    if video_exists:
         status = "completed"
         return {
             "current_step": None,
@@ -882,8 +902,26 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
             error_type = task_result.get("error_type")
             # Don't check anything else - task result is definitive
         elif task_status == "completed":
-            # Verify final video exists to confirm completion
-            if final_video.exists():
+            # Verify final video exists to confirm completion (check both R2 and local)
+            video_exists = False
+            if settings.USE_CLOUD_STORAGE:
+                # Check R2 storage via database
+                try:
+                    from web.models import VideoGenerationJob
+                    job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+                    if job and job.final_video:
+                        try:
+                            video_exists = job.final_video.storage.exists(job.final_video.name)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            
+            # Fallback to local filesystem check
+            if not video_exists:
+                video_exists = final_video.exists()
+            
+            if video_exists:
                 status = "completed"
             else:
                 # Task says completed but video doesn't exist - might still be processing
@@ -962,11 +1000,31 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
                         status = "running"
             else:
                 status = "pending"
-    # Priority 2: Check if final video exists (completed)
-    elif final_video.exists():
-        status = "completed"
+    # Priority 2: Check if final video exists (completed) - check both R2 and local
+    elif not task_result or task_result.get("status") != "failed":
+        video_exists = False
+        if settings.USE_CLOUD_STORAGE:
+            # Check R2 storage via database
+            try:
+                from web.models import VideoGenerationJob
+                job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+                if job and job.final_video:
+                    try:
+                        video_exists = job.final_video.storage.exists(job.final_video.name)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        
+        # Fallback to local filesystem check
+        if not video_exists:
+            video_exists = final_video.exists()
+        
+        if video_exists:
+            status = "completed"
+    
     # Priority 3: Check if log exists and determine if still running or failed
-    elif log_path.exists():
+    if status != "completed" and log_path.exists():
         try:
             import time
             mtime = log_path.stat().st_mtime
@@ -1726,8 +1784,15 @@ def api_status(request, paper_id: str):
             
             # Convert job to progress dict
             completed_steps = _get_completed_steps_from_progress(job.progress_percent)
+            
+            # Check if video exists (R2 or local) - if it does and progress is 100%, mark as completed
+            final_video_exists, final_video_url = _check_video_exists(paper_id, request.user if hasattr(request, 'user') and request.user.is_authenticated else None)
+            job_status = job.status
+            if final_video_exists and job.progress_percent >= 100:
+                job_status = 'completed'
+            
             progress = {
-                "status": job.status,
+                "status": job_status,
                 "current_step": job.current_step,
                 "completed_steps": completed_steps,
                 "progress_percent": job.progress_percent,
@@ -1735,6 +1800,17 @@ def api_status(request, paper_id: str):
             if job.status == 'failed':
                 progress["error"] = job.error_message
                 progress["error_type"] = job.error_type
+            
+            # Add video URL if available
+            if final_video_exists and final_video_url:
+                progress["final_video_url"] = final_video_url
+            elif job.final_video:
+                # Job has final_video FileField, try to get URL
+                try:
+                    if job.final_video.storage.exists(job.final_video.name):
+                        progress["final_video_url"] = reverse("serve_video", args=[paper_id])
+                except Exception:
+                    pass
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)
@@ -1783,7 +1859,7 @@ def api_result(request, paper_id: str):
     {
         "paper_id": "PMC10979640",
         "success": true,
-        "video_url": "/media/PMC10979640/final_video.mp4",
+        "video_url": "/video/PMC10979640/",
         "status": "completed"
     }
     or
@@ -1795,20 +1871,22 @@ def api_result(request, paper_id: str):
         "status_url": "/api/status/PMC10979640/"
     }
     """
-    output_dir = Path(settings.MEDIA_ROOT) / paper_id
-    final_video = output_dir / "final_video.mp4"
+    # Check if video exists (cloud storage or local)
+    final_video_exists, video_url = _check_video_exists(paper_id, request.user if hasattr(request, 'user') and request.user.is_authenticated else None)
     
-    progress = _get_pipeline_progress(output_dir)
-    
-    if final_video.exists():
+    if final_video_exists and video_url:
         return JsonResponse({
             "paper_id": paper_id,
             "success": True,
-            "video_url": f"{settings.MEDIA_URL}{paper_id}/final_video.mp4",
+            "video_url": video_url,  # Use serve_video endpoint
             "status": "completed",
             "progress_percent": 100,
         })
     else:
+        # Get progress for status info
+        output_dir = Path(settings.MEDIA_ROOT) / paper_id
+        progress = _get_pipeline_progress(output_dir)
+        
         return JsonResponse({
             "paper_id": paper_id,
             "success": False,
