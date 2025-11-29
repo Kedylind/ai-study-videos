@@ -156,15 +156,24 @@ if USE_CLOUD_STORAGE:
     AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")  # R2 endpoint
     AWS_S3_REGION_NAME = "auto"  # R2 uses "auto"
     
-    # Storage settings
-    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
-    
     # Security & performance
     AWS_S3_FILE_OVERWRITE = False
     AWS_DEFAULT_ACL = "public-read"  # Videos are public (or use "private" for signed URLs)
     AWS_S3_OBJECT_PARAMETERS = {
         "CacheControl": "max-age=86400",  # 1 day cache
     }
+    
+    # Storage settings - Use STORAGES dict for Django 4.2+ (also works with DEFAULT_FILE_STORAGE for backward compat)
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    # Also set DEFAULT_FILE_STORAGE for backward compatibility
+    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
     
     # Media files will be stored in R2
     # django-storages will handle URL construction automatically based on AWS_S3_ENDPOINT_URL

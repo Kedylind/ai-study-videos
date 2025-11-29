@@ -298,6 +298,17 @@ def test_r2_storage(request):
     
     # Test Server (Django) write access
     try:
+        # Debug storage configuration
+        storage_config_debug = {
+            "USE_CLOUD_STORAGE": getattr(settings, 'USE_CLOUD_STORAGE', False),
+            "DEFAULT_FILE_STORAGE": getattr(settings, 'DEFAULT_FILE_STORAGE', 'Not set'),
+            "STORAGES": getattr(settings, 'STORAGES', {}),
+            "AWS_STORAGE_BUCKET_NAME": getattr(settings, 'AWS_STORAGE_BUCKET_NAME', 'Not set'),
+            "AWS_S3_ENDPOINT_URL": getattr(settings, 'AWS_S3_ENDPOINT_URL', 'Not set'),
+            "actual_storage_backend": type(default_storage).__name__,
+            "actual_storage_module": type(default_storage).__module__,
+        }
+        
         test_filename = f"test_files/server_test_{timezone.now().strftime('%Y%m%d_%H%M%S')}.txt"
         test_content = (
             f"R2 Storage Test - {timezone.now().isoformat()}\n"
@@ -322,7 +333,9 @@ def test_r2_storage(request):
                 "test_file_readable": True,
                 "test_content_matches": read_back == test_content,
                 "storage_backend": type(default_storage).__name__,
+                "storage_module": type(default_storage).__module__,
                 "use_cloud_storage": getattr(settings, 'USE_CLOUD_STORAGE', False),
+                "storage_config_debug": storage_config_debug,
                 "timestamp": timezone.now().isoformat(),
             }
             
@@ -363,30 +376,93 @@ def test_r2_storage(request):
         if celery_result.get("success") and celery_result.get("test_file_path"):
             celery_file_path = celery_result["test_file_path"]
             try:
-                # Try to read the file that Celery wrote
-                if default_storage.exists(celery_file_path):
-                    celery_content = default_storage.open(celery_file_path).read().decode('utf-8')
+                # Add a small delay to ensure file is fully written (cloud storage eventual consistency)
+                import time
+                time.sleep(1)
+                
+                # Try multiple methods to verify the file exists
+                file_exists = False
+                file_readable = False
+                celery_content = None
+                file_url = None
+                debug_info = {}
+                
+                # Method 1: Check if file exists
+                try:
+                    file_exists = default_storage.exists(celery_file_path)
+                    debug_info["exists_check"] = file_exists
+                except Exception as e:
+                    debug_info["exists_check_error"] = str(e)
+                    debug_info["exists_check_error_type"] = type(e).__name__
+                
+                # Method 2: Try to open the file directly
+                if file_exists:
+                    try:
+                        celery_file = default_storage.open(celery_file_path, 'rb')
+                        celery_content = celery_file.read().decode('utf-8')
+                        celery_file.close()
+                        file_readable = True
+                        debug_info["open_success"] = True
+                    except Exception as e:
+                        debug_info["open_error"] = str(e)
+                        debug_info["open_error_type"] = type(e).__name__
+                
+                # Method 3: Try to get the URL
+                try:
+                    file_url = default_storage.url(celery_file_path)
+                    debug_info["url_generated"] = True
+                    debug_info["url"] = file_url
+                except Exception as e:
+                    debug_info["url_error"] = str(e)
+                    debug_info["url_error_type"] = type(e).__name__
+                
+                # Method 4: List files in the test_files directory to see what's actually there
+                try:
+                    # Try to list files in the test_files directory
+                    test_dir = "test_files/"
+                    if hasattr(default_storage, 'listdir'):
+                        dirs, files = default_storage.listdir(test_dir)
+                        debug_info["listdir_files"] = files[:10]  # First 10 files
+                        debug_info["celery_file_in_list"] = celery_file_path.split('/')[-1] in files
+                    else:
+                        debug_info["listdir_not_available"] = "Storage backend doesn't support listdir"
+                except Exception as e:
+                    debug_info["listdir_error"] = str(e)
+                
+                # Method 5: Check storage backend details
+                debug_info["storage_backend"] = type(default_storage).__name__
+                debug_info["storage_module"] = type(default_storage).__module__
+                if hasattr(default_storage, 'bucket_name'):
+                    debug_info["bucket_name"] = default_storage.bucket_name
+                if hasattr(default_storage, 'location'):
+                    debug_info["location"] = default_storage.location
+                
+                if file_exists and file_readable:
                     result["cross_service_check"] = {
                         "celery_file_path": celery_file_path,
                         "server_can_see_celery_file": True,
                         "server_can_read_celery_file": True,
-                        "file_content_preview": celery_content[:300],
-                        "file_url": default_storage.url(celery_file_path) if hasattr(default_storage, 'url') else "N/A",
+                        "file_content_preview": celery_content[:300] if celery_content else None,
+                        "file_url": file_url,
+                        "debug_info": debug_info,
                     }
                 else:
                     result["cross_service_check"] = {
                         "celery_file_path": celery_file_path,
-                        "server_can_see_celery_file": False,
-                        "server_can_read_celery_file": False,
-                        "warning": "Server cannot see file written by Celery! They may be using different storage backends or credentials.",
+                        "server_can_see_celery_file": file_exists,
+                        "server_can_read_celery_file": file_readable,
+                        "warning": "Server cannot see/read file written by Celery! They may be using different storage backends or credentials.",
+                        "debug_info": debug_info,
                     }
             except Exception as e:
+                import traceback
                 result["cross_service_check"] = {
                     "celery_file_path": celery_file_path,
                     "server_can_see_celery_file": False,
                     "server_can_read_celery_file": False,
                     "read_error": str(e),
                     "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
                 }
         else:
             result["cross_service_check"] = {
