@@ -7,6 +7,7 @@ import urllib.error
 import xml.etree.ElementTree as ET
 
 from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 from django.contrib.auth import login
@@ -19,7 +20,7 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
-from .tasks import generate_video_task, get_task_status, update_job_progress_from_files
+from .tasks import generate_video_task, get_task_status, update_job_progress_from_files, test_r2_storage_write_task
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -270,6 +271,182 @@ def static_debug(request):
         return response
     except Exception as e:
         return JsonResponse({"error": str(e), "type": type(e).__name__}, status=500)
+
+
+def test_r2_storage(request):
+    """
+    Test endpoint to verify R2 cloud storage is accessible from both Celery and Server.
+    
+    This creates a test file in R2 via Celery worker and then reads it from Server.
+    This verifies that both services can access the same cloud storage.
+    
+    Access: /test-r2-storage/
+    
+    Query parameters:
+    - test_celery=1: Also test Celery write (default: always tests)
+    """
+    from django.core.files.storage import default_storage
+    from django.core.files.base import ContentFile
+    from .tasks import test_r2_storage_write_task
+    import traceback
+    
+    result = {
+        "server_test": {},
+        "celery_test": {},
+        "cross_service_check": {},
+    }
+    
+    # Test Server (Django) write access
+    try:
+        test_filename = f"test_files/server_test_{timezone.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        test_content = (
+            f"R2 Storage Test - {timezone.now().isoformat()}\n"
+            f"Service: Server (Django)\n"
+            f"Storage Backend: {type(default_storage).__name__}\n"
+            f"USE_CLOUD_STORAGE: {getattr(settings, 'USE_CLOUD_STORAGE', False)}\n"
+        )
+        
+        # Write to cloud storage
+        test_file = default_storage.save(test_filename, ContentFile(test_content.encode('utf-8')))
+        
+        # Verify we can read it back
+        if default_storage.exists(test_file):
+            read_back = default_storage.open(test_file).read().decode('utf-8')
+            
+            result["server_test"] = {
+                "success": True,
+                "message": "R2 storage write test successful from Server",
+                "service": "Server (Django)",
+                "test_file_path": test_file,
+                "test_file_exists": True,
+                "test_file_readable": True,
+                "test_content_matches": read_back == test_content,
+                "storage_backend": type(default_storage).__name__,
+                "use_cloud_storage": getattr(settings, 'USE_CLOUD_STORAGE', False),
+                "timestamp": timezone.now().isoformat(),
+            }
+            
+            # Get file URL if available
+            try:
+                result["server_test"]["test_file_url"] = default_storage.url(test_file)
+            except Exception:
+                result["server_test"]["test_file_url"] = "N/A (URL generation failed)"
+        else:
+            result["server_test"] = {
+                "success": False,
+                "error": "File was written but does not exist when checked",
+                "service": "Server (Django)",
+                "test_file_path": test_file,
+            }
+            
+    except Exception as e:
+        import sys
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        result["server_test"] = {
+            "success": False,
+            "error": str(e),
+            "type": type(e).__name__,
+            "service": "Server (Django)",
+            "traceback": ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+            "use_cloud_storage": getattr(settings, 'USE_CLOUD_STORAGE', False),
+            "storage_backend": type(default_storage).__name__ if 'default_storage' in locals() else "unknown",
+            "recommendation": "Check R2 credentials and configuration. Ensure USE_CLOUD_STORAGE=True and all AWS_* variables are set.",
+        }
+    
+    # Test Celery write access
+    try:
+        celery_task = test_r2_storage_write_task.delay()
+        celery_result = celery_task.get(timeout=30)  # Increased timeout for cloud operations
+        result["celery_test"] = celery_result
+        
+        # CRITICAL: Check if Server can read the file that Celery wrote
+        if celery_result.get("success") and celery_result.get("test_file_path"):
+            celery_file_path = celery_result["test_file_path"]
+            try:
+                # Try to read the file that Celery wrote
+                if default_storage.exists(celery_file_path):
+                    celery_content = default_storage.open(celery_file_path).read().decode('utf-8')
+                    result["cross_service_check"] = {
+                        "celery_file_path": celery_file_path,
+                        "server_can_see_celery_file": True,
+                        "server_can_read_celery_file": True,
+                        "file_content_preview": celery_content[:300],
+                        "file_url": default_storage.url(celery_file_path) if hasattr(default_storage, 'url') else "N/A",
+                    }
+                else:
+                    result["cross_service_check"] = {
+                        "celery_file_path": celery_file_path,
+                        "server_can_see_celery_file": False,
+                        "server_can_read_celery_file": False,
+                        "warning": "Server cannot see file written by Celery! They may be using different storage backends or credentials.",
+                    }
+            except Exception as e:
+                result["cross_service_check"] = {
+                    "celery_file_path": celery_file_path,
+                    "server_can_see_celery_file": False,
+                    "server_can_read_celery_file": False,
+                    "read_error": str(e),
+                    "error_type": type(e).__name__,
+                }
+        else:
+            result["cross_service_check"] = {
+                "warning": "Cannot test cross-service access - Celery write test failed",
+                "celery_error": celery_result.get("error", "Unknown error"),
+            }
+            
+    except Exception as e:
+        result["celery_test"] = {
+            "success": False,
+            "error": str(e),
+            "type": type(e).__name__,
+            "service": "Celery Worker",
+            "recommendation": "Check that Celery worker is running and has access to R2 credentials.",
+        }
+        result["cross_service_check"] = {
+            "warning": "Cannot test cross-service access - Celery task failed",
+            "error": str(e),
+        }
+    
+    # Overall status
+    try:
+        server_ok = result.get("server_test", {}).get("success", False)
+        celery_test_result = result.get("celery_test", {})
+        celery_ok = celery_test_result.get("success", False) if celery_test_result else None
+        cross_service_ok = result.get("cross_service_check", {}).get("server_can_see_celery_file", None)
+        
+        if celery_ok is None:
+            # Only tested server
+            result["overall_status"] = "OK" if server_ok else "FAILED"
+            result["recommendation"] = "Server can access R2 storage" if server_ok else "Server cannot access R2 storage. Check R2 credentials and configuration."
+        else:
+            # Tested both - now check cross-service access
+            if server_ok and celery_ok and cross_service_ok:
+                result["overall_status"] = "OK"
+                result["recommendation"] = "✅ Both Server and Celery can access the SAME R2 storage. Setup is correct!"
+            elif server_ok and celery_ok and not cross_service_ok:
+                result["overall_status"] = "FAILED"
+                result["recommendation"] = "⚠️ CRITICAL: Server and Celery are using DIFFERENT storage backends or credentials! Celery can write, but Server cannot see Celery's files. Check that both services have the same R2 environment variables set."
+            elif not server_ok and celery_ok:
+                result["overall_status"] = "PARTIAL"
+                result["recommendation"] = "Celery can write to R2, but Server cannot. Check Server's R2 credentials and configuration."
+            elif server_ok and not celery_ok:
+                result["overall_status"] = "PARTIAL"
+                result["recommendation"] = "Server can access R2, but Celery cannot write. Check Celery's R2 credentials and configuration."
+            else:
+                result["overall_status"] = "FAILED"
+                result["recommendation"] = "Neither service can access R2 storage. Check R2 credentials and configuration for both services."
+        
+        status_code = 200 if result.get("overall_status") == "OK" else 500
+    except Exception as e:
+        result["overall_status"] = "ERROR"
+        result["status_calculation_error"] = str(e)
+        result["recommendation"] = "Error calculating overall status. Check individual test results."
+        status_code = 500
+    
+    import json
+    response = JsonResponse(result, status=status_code)
+    response.content = json.dumps(result, indent=2)
+    return response
 
 
 def debug_video_files(request, pmid: str):

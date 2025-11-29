@@ -532,9 +532,10 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                     # Refresh job to get latest progress
                     job.refresh_from_db()
                     
-                    # Generate unique filename with date organization
-                    date_path = datetime.now().strftime('%Y/%m/%d')
-                    video_filename = f"videos/{date_path}/{pmid}_final_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                    # Generate unique filename (model's upload_to will add date path automatically)
+                    # Format: {pmid}_final_video_{timestamp}.mp4
+                    # Model's upload_to='videos/%Y/%m/%d/' will create: videos/2025/01/28/{filename}.mp4
+                    video_filename = f"{pmid}_final_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
                     
                     # Upload to cloud storage (R2) or save locally
                     if settings.USE_CLOUD_STORAGE:
@@ -545,11 +546,28 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                                 job.final_video.save(video_filename, django_file, save=False)
                                 job.final_video_path = job.final_video.name  # Store the storage path
                                 logger.info(f"Video uploaded to cloud storage: {job.final_video.name}")
+                                
+                                # Delete local file after successful R2 upload to save disk space
+                                try:
+                                    final_video.unlink()
+                                    logger.info(f"Deleted local file after successful R2 upload: {final_video}")
+                                except Exception as cleanup_error:
+                                    logger.warning(f"Failed to delete local file after R2 upload: {cleanup_error}")
                         except Exception as upload_error:
                             logger.error(f"Failed to upload video to cloud storage: {upload_error}", exc_info=True)
-                            # Fallback: keep local path if cloud upload fails
-                            job.final_video_path = str(final_video)
-                            logger.warning(f"Saved local path as fallback: {job.final_video_path}")
+                            if settings.USE_CLOUD_STORAGE:
+                                # In production with cloud storage, this is a critical error
+                                logger.critical(
+                                    f"CRITICAL: R2 upload failed in production mode for {pmid}. "
+                                    f"Video may not be accessible. Error: {upload_error}"
+                                )
+                                # Still save local path as fallback, but log the critical issue
+                                job.final_video_path = str(final_video)
+                                logger.warning(f"Saved local path as fallback: {job.final_video_path}")
+                            else:
+                                # Development mode - just use local path
+                                job.final_video_path = str(final_video)
+                                logger.warning(f"Saved local path as fallback: {job.final_video_path}")
                     else:
                         # Local storage - just save the path
                         job.final_video_path = str(final_video)
@@ -929,4 +947,81 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
             connections.close_all()
         except Exception:
             pass
+
+
+@shared_task(bind=True, name="web.tasks.test_r2_storage_write")
+def test_r2_storage_write_task(self) -> Dict:
+    """
+    Celery task to test if R2 cloud storage is writable from Celery worker.
+    
+    This creates a test file in R2 to verify cloud storage is working.
+    This can be called from Celery to test if it can write to R2.
+    
+    Returns:
+        Dict with test results
+    """
+    from django.core.files.storage import default_storage
+    from django.core.files.base import ContentFile
+    
+    try:
+        # Generate unique test filename
+        test_filename = f"test_files/celery_test_{timezone.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        task_id = self.request.id if hasattr(self, 'request') else 'N/A'
+        
+        # Create test content
+        test_content = (
+            f"R2 Storage Test - {timezone.now().isoformat()}\n"
+            f"Service: Celery Worker\n"
+            f"Task ID: {task_id}\n"
+            f"Storage Backend: {type(default_storage).__name__}\n"
+            f"USE_CLOUD_STORAGE: {getattr(settings, 'USE_CLOUD_STORAGE', False)}\n"
+        )
+        
+        # Write to cloud storage
+        test_file = default_storage.save(test_filename, ContentFile(test_content.encode('utf-8')))
+        
+        # Verify we can read it back
+        if default_storage.exists(test_file):
+            read_back = default_storage.open(test_file).read().decode('utf-8')
+            
+            result = {
+                "success": True,
+                "message": "R2 storage write test successful from Celery",
+                "service": "Celery Worker",
+                "test_file_path": test_file,
+                "test_file_exists": True,
+                "test_file_readable": True,
+                "test_content_matches": read_back == test_content,
+                "storage_backend": type(default_storage).__name__,
+                "use_cloud_storage": getattr(settings, 'USE_CLOUD_STORAGE', False),
+                "task_id": task_id,
+                "timestamp": timezone.now().isoformat(),
+            }
+            
+            # Get file URL if available
+            try:
+                result["test_file_url"] = default_storage.url(test_file)
+            except Exception:
+                result["test_file_url"] = "N/A (URL generation failed)"
+            
+            return result
+        else:
+            return {
+                "success": False,
+                "error": "File was written but does not exist when checked",
+                "service": "Celery Worker",
+                "test_file_path": test_file,
+            }
+            
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "type": type(e).__name__,
+            "service": "Celery Worker",
+            "traceback": traceback.format_exc(),
+            "use_cloud_storage": getattr(settings, 'USE_CLOUD_STORAGE', False),
+            "storage_backend": type(default_storage).__name__ if 'default_storage' in locals() else "unknown",
+        }
 
