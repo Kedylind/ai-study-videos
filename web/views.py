@@ -934,8 +934,12 @@ def pipeline_status(request, pmid: str):
                     
                     # Convert job to progress dict
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
+                    # If progress is 100% but status is still running, mark as completed
+                    job_status = job.status
+                    if job.progress_percent >= 100 and job_status in ['pending', 'running']:
+                        job_status = 'completed'
                     progress = {
-                        "status": job.status,
+                        "status": job_status,
                         "current_step": job.current_step,
                         "completed_steps": completed_steps,
                         "progress_percent": job.progress_percent,
@@ -986,18 +990,35 @@ def pipeline_status(request, pmid: str):
     if progress is None:
         try:
             progress = _get_pipeline_progress(output_dir)
+            # If final video exists, mark as completed
+            if final_video.exists() and progress.get("progress_percent", 0) >= 100:
+                progress["status"] = "completed"
         except Exception as e:
             # Fallback progress dict if _get_pipeline_progress fails
             import logging
             logger = logging.getLogger(__name__)
             logger.exception(f"Error getting pipeline progress for {pmid}: {e}")
-            progress = {
-                "status": "pending",
-                "current_step": None,
-                "completed_steps": [],
-                "progress_percent": 0,
-                "total_steps": 5,
-            }
+            # If video exists, mark as completed even if we can't get progress
+            if final_video.exists():
+                progress = {
+                    "status": "completed",
+                    "current_step": None,
+                    "completed_steps": ["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"],
+                    "progress_percent": 100,
+                    "total_steps": 5,
+                }
+            else:
+                progress = {
+                    "status": "pending",
+                    "current_step": None,
+                    "completed_steps": [],
+                    "progress_percent": 0,
+                    "total_steps": 5,
+                }
+    
+    # Ensure status is "completed" if video exists and progress is 100%
+    if final_video.exists() and progress.get("progress_percent", 0) >= 100:
+        progress["status"] = "completed"
 
     if request.GET.get("_json"):
         # JSON status endpoint - use the new progress tracking

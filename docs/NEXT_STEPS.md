@@ -756,27 +756,139 @@ finally:
 
 ---
 
-### 5. Video Management UI
+### 5. Add Video Deletion to "My Videos" Page
+**Status:** Not implemented  
+**Priority:** 🟡 Medium  
+**Estimated Effort:** 2-3 hours
+
+**What needs to be done:**
+- Add delete button to each video entry in "My Videos" page
+- Implement delete view that:
+  - Verifies user owns the video (security check)
+  - Deletes the video file from storage
+  - Deletes the `VideoGenerationJob` database record
+  - Handles errors gracefully (file not found, permission errors)
+- Add confirmation dialog before deletion
+- Update UI after successful deletion (remove from list without page refresh)
+- Show success/error messages
+
+**Implementation Steps:**
+
+1. **Create Delete View:**
+   - File: `web/views.py`
+   - Add `@login_required` decorator
+   - Verify `VideoGenerationJob.user == request.user` (security)
+   - Delete video file from `MEDIA_ROOT / paper_id / final_video.mp4`
+   - Delete all related files (audio, clips, etc.) or just the final video
+   - Delete `VideoGenerationJob` record from database
+   - Return JSON response for AJAX or redirect to my_videos page
+
+2. **Add URL Route:**
+   - File: `web/urls.py`
+   - Add: `path('my-videos/<str:paper_id>/delete/', delete_video, name='delete_video')`
+
+3. **Update Template:**
+   - File: `web/templates/my_videos.html`
+   - Add delete button for each video entry
+   - Add confirmation dialog (JavaScript)
+   - Add AJAX call to delete endpoint
+   - Update UI after successful deletion
+
+4. **Handle Edge Cases:**
+   - Video file doesn't exist (already deleted)
+   - User tries to delete someone else's video (security check)
+   - Database record doesn't exist
+   - Storage errors (permissions, disk full)
+
+**Code Example:**
+
+```python
+@login_required
+def delete_video(request, paper_id: str):
+    """Delete a video and its database record."""
+    try:
+        from web.models import VideoGenerationJob
+        from pathlib import Path
+        from django.conf import settings
+        
+        # Get job record and verify ownership
+        try:
+            job = VideoGenerationJob.objects.get(paper_id=paper_id, user=request.user)
+        except VideoGenerationJob.DoesNotExist:
+            return JsonResponse({"success": False, "error": "Video not found"}, status=404)
+        
+        # Delete video file
+        video_path = Path(settings.MEDIA_ROOT) / paper_id / "final_video.mp4"
+        if video_path.exists():
+            try:
+                video_path.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete video file: {e}")
+        
+        # Optionally delete entire directory
+        output_dir = Path(settings.MEDIA_ROOT) / paper_id
+        if output_dir.exists():
+            try:
+                import shutil
+                shutil.rmtree(output_dir)
+            except Exception as e:
+                logger.warning(f"Failed to delete output directory: {e}")
+        
+        # Delete database record
+        job.delete()
+        
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return JsonResponse({"success": True, "message": "Video deleted successfully"})
+        else:
+            messages.success(request, "Video deleted successfully")
+            return redirect('my_videos')
+            
+    except Exception as e:
+        logger.error(f"Error deleting video {paper_id}: {e}", exc_info=True)
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return JsonResponse({"success": False, "error": str(e)}, status=500)
+        else:
+            messages.error(request, f"Error deleting video: {str(e)}")
+            return redirect('my_videos')
+```
+
+**Files to modify:**
+- `web/views.py` - Add `delete_video()` view
+- `web/urls.py` - Add delete route
+- `web/templates/my_videos.html` - Add delete button and JavaScript
+
+**Testing:**
+- [ ] User can delete their own video
+- [ ] User cannot delete another user's video (security check)
+- [ ] Video file is deleted from storage
+- [ ] Database record is deleted
+- [ ] UI updates after deletion
+- [ ] Error handling works correctly
+
+---
+
+### 6. Video Management UI (Full Admin View)
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 4-5 hours
 
 **What needs to be done:**
-- Create video list page showing all generated videos
-- Add user association (who generated which video)
-- Implement delete functionality
-- Add download links
-- Add filtering/search by paper ID, date, status
+- Create admin video list page showing all generated videos (all users)
+- Add filtering/search by paper ID, date, status, user
 - Show video metadata (duration, scenes, generation time)
+- Add bulk delete functionality
+- Add download links
 
 **New endpoints needed:**
-- `GET /videos/` - List all videos
-- `DELETE /videos/<paper_id>/` - Delete video
-- `GET /videos/<paper_id>/download/` - Download video
+- `GET /admin/videos/` - List all videos (admin only)
+- `DELETE /admin/videos/<paper_id>/` - Delete video (admin)
+- `GET /admin/videos/<paper_id>/download/` - Download video (admin)
+
+**Note:** This is separate from the user-facing "My Videos" delete feature (Task 5).
 
 ---
 
-### 6. Error Monitoring & Logging
+### 7. Error Monitoring & Logging
 **Status:** Basic logging exists  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -795,7 +907,7 @@ finally:
 
 ---
 
-### 7. Rate Limiting & API Quota Management
+### 8. Rate Limiting & API Quota Management
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -816,7 +928,7 @@ finally:
 
 ## 🔧 Low Priority (Nice to Have)
 
-### 8. Email Verification
+### 9. Email Verification
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -829,7 +941,7 @@ finally:
 
 ---
 
-### 9. Password Reset
+### 10. Password Reset
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -842,7 +954,7 @@ finally:
 
 ---
 
-### 10. User Profiles
+### 11. User Profiles
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 3-4 hours
@@ -855,7 +967,7 @@ finally:
 
 ---
 
-### 11. Django Admin Configuration
+### 12. Django Admin Configuration
 **Status:** Basic admin, not customized  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 1-2 hours
@@ -870,7 +982,7 @@ finally:
 
 ## 📚 Documentation Tasks
 
-### 12. Deployment Guide
+### 13. Deployment Guide
 **Status:** Partial (Railway setup exists)  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 2-3 hours
@@ -884,7 +996,7 @@ finally:
 
 ---
 
-### 13. Architecture Documentation
+### 14. Architecture Documentation
 **Status:** Not created  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -899,7 +1011,7 @@ finally:
 
 ## 🧪 Testing & Quality
 
-### 14. Add Unit Tests
+### 15. Add Unit Tests
 **Status:** No tests exist  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 6-8 hours
@@ -913,7 +1025,7 @@ finally:
 
 ---
 
-### 15. Real-Time Status Updates (WebSockets/SSE)
+### 16. Real-Time Status Updates (WebSockets/SSE)
 **Status:** Not implemented  
 **Priority:** 🟢 Low (Nice to Have)  
 **Estimated Effort:** 4-6 hours
@@ -952,7 +1064,7 @@ finally:
 
 ---
 
-### 16. Error Handling Improvements
+### 17. Error Handling Improvements
 **Status:** Basic error handling  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -974,7 +1086,8 @@ finally:
 - [ ] File upload processing (currently fails - uses filename as PubMed ID)
 
 ### Planned 📅
-- [ ] Video management UI enhancements (delete, download, search)
+- [ ] Add video deletion to "My Videos" page
+- [ ] Video management UI enhancements (admin view, bulk operations)
 - [ ] Error monitoring (Sentry)
 - [ ] Rate limiting
 - [ ] Real-time status updates (WebSockets/SSE)
@@ -994,7 +1107,8 @@ finally:
 4. Complete file upload feature
 
 **Sprint 2 (Core Features):**
-6. Video management UI enhancements (delete, download, search)
+5. Add video deletion to "My Videos" page
+6. Video management UI enhancements (admin view, bulk operations)
 7. Error monitoring (Sentry)
 8. Rate limiting
 
