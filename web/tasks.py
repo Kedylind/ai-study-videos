@@ -11,6 +11,8 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -206,12 +208,30 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                 
                 logger.info(f"Started subprocess with PID: {process.pid}")
                 
+                # Start a background thread to periodically update progress
+                def update_progress_periodically():
+                    """Update progress in database while pipeline is running."""
+                    while process.poll() is None:  # While process is still running
+                        try:
+                            # Update progress based on file existence
+                            update_job_progress_from_files(pmid, self.request.id)
+                            time.sleep(5)  # Update every 5 seconds
+                        except Exception as e:
+                            logger.warning(f"Error updating progress: {e}")
+                            time.sleep(5)  # Continue even if update fails
+                
+                progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
+                progress_thread.start()
+                
                 # Wait for process to complete with timeout handling
                 # Use Celery's time limit minus a buffer for cleanup
                 timeout_seconds = settings.CELERY_TASK_TIME_LIMIT - 60  # Leave 60s buffer
                 try:
                     return_code = process.wait(timeout=timeout_seconds)
                     logger.info(f"Subprocess completed with return code: {return_code}")
+                    
+                    # Final progress update after completion
+                    update_job_progress_from_files(pmid, self.request.id)
                 except subprocess.TimeoutExpired:
                     logger.error(f"Subprocess timed out after {timeout_seconds} seconds")
                     # Try graceful termination first
@@ -256,6 +276,10 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
             return_code = -1
             raise
         
+        # Final progress update before checking completion status
+        # This ensures we capture the actual progress even if pipeline failed
+        update_job_progress_from_files(pmid, self.request.id)
+        
         # Check if pipeline succeeded
         final_video = output_path / "final_video.mp4"
         
@@ -266,6 +290,8 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
             # Update database job record
             if job:
                 try:
+                    # Refresh job to get latest progress
+                    job.refresh_from_db()
                     job.status = 'completed'
                     job.progress_percent = 100
                     job.current_step = None
@@ -285,12 +311,16 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
             
             logger.error(f"Video generation failed for {pmid}: {error_message}")
             
-            # Update database job record
+            # Update database job record with failure status
+            # But keep the progress that was actually achieved
             if job:
                 try:
+                    # Refresh job to get latest progress
+                    job.refresh_from_db()
                     job.status = 'failed'
                     job.error_message = error_message
                     job.error_type = error_type
+                    # Don't reset progress - keep what was actually completed
                     job.save(update_fields=['status', 'error_message', 'error_type', 'updated_at'])
                 except Exception as e:
                     logger.warning(f"Failed to update job record on failure: {e}")
@@ -579,17 +609,28 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
         
         current_step = None
         progress_percent = 0
+        completed_steps = []
         
+        # Check each step to determine progress
         for step_name, step_percent, check_func in steps:
             if check_func(output_dir):
                 progress_percent = step_percent
+                completed_steps.append(step_name)
+                logger.debug(f"Step {step_name} completed (progress: {progress_percent}%)")
             else:
                 if current_step is None:
                     current_step = step_name
-                break
+                logger.debug(f"Step {step_name} not yet completed, current step: {current_step}")
+                # Don't break - continue checking to see all completed steps
+        
+        # If all steps are complete, we're at 100%
+        if len(completed_steps) == len(steps):
+            progress_percent = 100
+            current_step = None
         
         # Update job if progress changed
         if job.progress_percent != progress_percent or job.current_step != current_step:
+            logger.info(f"Updating job progress: {job.progress_percent}% -> {progress_percent}%, step: {job.current_step} -> {current_step}")
             job.progress_percent = progress_percent
             job.current_step = current_step
             if progress_percent == 100:
@@ -600,6 +641,9 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
                     job.completed_at = timezone.now()
                     job.current_step = None
             job.save(update_fields=['progress_percent', 'current_step', 'status', 'final_video_path', 'completed_at', 'updated_at'])
+            logger.info(f"Job progress updated successfully")
+        else:
+            logger.debug(f"Job progress unchanged: {progress_percent}%, step: {current_step}")
     except Exception as e:
         logger.warning(f"Failed to update job progress from files: {e}")
 
