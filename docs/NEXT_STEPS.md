@@ -17,7 +17,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 - ✅ Access control implemented (access code required)
 - ✅ Database models for job tracking implemented
 - ✅ "My Videos" archive page implemented
-- ✅ Real-time progress tracking working
+- ⚠️ Progress tracking implemented but unreliable (needs real-time parsing fix)
 - 🔴 **BLOCKER:** Cloud storage not implemented - videos lost on Railway container restarts
 
 ---
@@ -287,67 +287,388 @@ Once Railway Volumes are working:
 
 ---
 
-### 2. ✅ COMPLETED: Database Models for Job Tracking + User Video Archive
-**Status:** ✅ **COMPLETED**  
-**Priority:** ~~🔴 Critical~~ (Done!)
+### 2. Fix Progress Tracking - Real-Time Pipeline Output Parsing
+**Status:** Not implemented  
+**Priority:** 🔴 **CRITICAL - Progress tracking not working reliably**  
+**Estimated Effort:** 2-3 hours
 
-**What was implemented:**
-- ✅ `VideoGenerationJob` model created in `web/models.py`
-- ✅ Database migrations created and run
-- ✅ Celery task updates database with progress (`web/tasks.py`)
-- ✅ Views use database for status checking (`web/views.py`)
-- ✅ "My Videos" page implemented (`/my-videos/`)
-- ✅ Real-time progress bar working
-- ✅ User-specific video archive working
+**WHY THIS IS NEEDED:**
+- **Current Problem:** Progress tracking uses file existence checks which are unreliable
+- **Issues:**
+  - Files may not be immediately visible after creation
+  - Background thread may not be running properly
+  - 5-second polling delay causes missed updates
+  - File system timing issues on different platforms
+- **Impact:** Progress bar doesn't update reliably, users see stuck progress
 
-**Files created/modified:**
-- ✅ `web/models.py` - VideoGenerationJob model
-- ✅ `web/tasks.py` - Database updates during pipeline execution
-- ✅ `web/views.py` - Database queries, my_videos() view
-- ✅ `web/templates/my_videos.html` - User video archive template
-- ✅ `web/urls.py` - Added my-videos route
+**Solution: Parse Pipeline Output in Real-Time**
 
-**Result:**
-- Progress bar now updates reliably from database
-- Users can see all their generated videos at `/my-videos/`
-- Status checking is simple and fast (database queries)
-- User history tracking working
-
-**GOAL:** 
-1. Show a **reliable, real-time progress bar** while Celery processes video generation in the background
-2. Create a **"My Videos" archive page** where each logged-in user can see all videos they've generated (user-specific, private to them)
-
-**Problem:**
-- Current implementation uses file-based status tracking (checking file existence)
-- Complex status checking logic with multiple fallback methods (400+ lines in `_get_pipeline_progress()`)
-- No way to query all videos or track user history
-- Doesn't scale to multiple servers
-- No user association with generated videos
-- Progress bar is unreliable because it depends on file system checks
-- Users cannot see their video generation history
+Instead of checking file existence, parse the pipeline's stdout/stderr output in real-time to detect when steps complete. The pipeline already logs step completions (e.g., `"Step: fetch-paper"` and `"✓ Complete"`).
 
 ---
 
-### 2. Celery Production Deployment
-**Status:** ✅ Implemented locally (needs production setup)  
-**Priority:** 🟠 High  
-**Estimated Effort:** 1 hour
+## Step-by-Step Implementation Guide
 
-**What needs to be done:**
-- Set up Redis service on Railway
-- Configure `CELERY_BROKER_URL` environment variable
-- Test that tasks survive server restart in production
-- Verify error handling works in production
+### Step 1: Modify Subprocess to Capture Output
 
-**Action items:**
-- [ ] Set up Redis service on Railway
-- [ ] Configure `CELERY_BROKER_URL` environment variable
-- [ ] Test that tasks survive server restart (production)
-- [ ] Test error handling with invalid inputs (production)
+**File:** `web/tasks.py`
+
+**Current code (around line 199-207):**
+```python
+with open(log_path, "ab") as log_file:
+    process = subprocess.Popen(
+        cmd,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        env=env,
+        cwd=str(settings.BASE_DIR),
+        start_new_session=True,
+    )
+```
+
+**Change to:**
+```python
+# Open log file for writing
+log_file = open(log_path, "ab")
+
+# Create subprocess with PIPE for stdout so we can read it
+process = subprocess.Popen(
+    cmd,
+    stdout=subprocess.PIPE,  # Changed from log_file to PIPE
+    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+    env=env,
+    cwd=str(settings.BASE_DIR),
+    start_new_session=True,
+    text=True,  # Text mode for line-by-line reading
+    bufsize=1,  # Line buffered
+)
+```
+
+**Why:** This allows us to read output line-by-line while also writing to the log file.
 
 ---
 
-### 3. Complete File Upload Feature
+### Step 2: Create Progress Parser Function
+
+**File:** `web/tasks.py`
+
+**Add this function before `generate_video_task()`:**
+
+```python
+def _parse_pipeline_progress(line: str, current_progress: dict) -> dict:
+    """
+    Parse a single line of pipeline output to detect progress updates.
+    
+    Args:
+        line: A line from pipeline stdout/stderr
+        current_progress: Current progress dict with keys:
+            - progress_percent: int (0-100)
+            - current_step: str or None
+            - completed_steps: list of step names
+    
+    Returns:
+        Updated progress dict, or None if no change
+    """
+    line_lower = line.lower()
+    
+    # Step completion markers
+    step_markers = {
+        "fetch-paper": {
+            "start": "step: fetch-paper",
+            "complete": "✓ complete",
+            "percent": 20,
+        },
+        "generate-script": {
+            "start": "step: generate-script",
+            "complete": "✓ complete",
+            "percent": 40,
+        },
+        "generate-audio": {
+            "start": "step: generate-audio",
+            "complete": "✓ complete",
+            "percent": 60,
+        },
+        "generate-videos": {
+            "start": "step: generate-videos",
+            "complete": "✓ complete",
+            "percent": 80,
+        },
+        "add-captions": {
+            "start": "step: add-captions",
+            "complete": "✓ complete",
+            "percent": 100,
+        },
+    }
+    
+    # Check for step completions
+    for step_name, markers in step_markers.items():
+        if markers["start"] in line_lower and markers["complete"] in line_lower:
+            # Step completed
+            if step_name not in current_progress.get("completed_steps", []):
+                current_progress["progress_percent"] = markers["percent"]
+                current_progress["current_step"] = None
+                if "completed_steps" not in current_progress:
+                    current_progress["completed_steps"] = []
+                current_progress["completed_steps"].append(step_name)
+                return current_progress
+        elif markers["start"] in line_lower:
+            # Step started but not completed yet
+            if step_name not in current_progress.get("completed_steps", []):
+                current_progress["current_step"] = step_name
+                return current_progress
+    
+    # Check for pipeline completion
+    if "pipeline complete!" in line_lower:
+        current_progress["progress_percent"] = 100
+        current_progress["current_step"] = None
+        return current_progress
+    
+    # Check for failures
+    if "✗" in line or "pipelineerror" in line_lower or "failed" in line_lower:
+        current_progress["status"] = "failed"
+        return current_progress
+    
+    return None  # No progress change
+```
+
+---
+
+### Step 3: Replace Background Thread with Real-Time Output Reading
+
+**File:** `web/tasks.py`
+
+**Replace the background thread code (lines 211-239) with:**
+
+```python
+# Read output line-by-line and update progress in real-time
+progress_state = {
+    "progress_percent": 0,
+    "current_step": "starting",
+    "completed_steps": [],
+    "status": "running",
+}
+
+def update_progress_from_line(line: str):
+    """Update progress state from a pipeline output line."""
+    parsed = _parse_pipeline_progress(line, progress_state.copy())
+    if parsed:
+        progress_state.update(parsed)
+        
+        # Update database immediately
+        try:
+            from django.db import connections
+            connections.close_all()
+            
+            from web.models import VideoGenerationJob
+            from django.utils import timezone
+            
+            job = VideoGenerationJob.objects.get(task_id=self.request.id)
+            
+            # Only update if job is still running
+            if job.status in ['pending', 'running']:
+                job.progress_percent = progress_state["progress_percent"]
+                job.current_step = progress_state.get("current_step")
+                
+                if progress_state.get("status") == "failed":
+                    job.status = "failed"
+                
+                if progress_state["progress_percent"] == 100:
+                    job.status = "completed"
+                    job.current_step = None
+                    job.completed_at = timezone.now()
+                
+                job.save(update_fields=[
+                    'progress_percent', 'current_step', 'status', 
+                    'completed_at', 'updated_at'
+                ])
+                
+                logger.info(
+                    f"Progress updated: {job.progress_percent}%, "
+                    f"step: {job.current_step}"
+                )
+            
+            connections.close_all()
+        except Exception as e:
+            logger.warning(f"Failed to update progress from line: {e}")
+
+# Start thread to read output and update progress
+def read_output_and_update_progress():
+    """Read subprocess output line-by-line and update progress."""
+    try:
+        for line in process.stdout:
+            # Write to log file
+            log_file.write(line.encode('utf-8'))
+            log_file.flush()
+            
+            # Parse for progress updates
+            update_progress_from_line(line)
+            
+    except Exception as e:
+        logger.error(f"Error reading subprocess output: {e}", exc_info=True)
+    finally:
+        log_file.close()
+
+# Start output reading thread
+output_thread = threading.Thread(target=read_output_and_update_progress, daemon=True)
+output_thread.start()
+logger.info("Started real-time output parsing thread")
+```
+
+---
+
+### Step 4: Update Process Waiting Logic
+
+**File:** `web/tasks.py`
+
+**Replace the process.wait() code (around line 244-249) with:**
+
+```python
+# Wait for process to complete with timeout handling
+timeout_seconds = settings.CELERY_TASK_TIME_LIMIT - 60  # Leave 60s buffer
+try:
+    return_code = process.wait(timeout=timeout_seconds)
+    logger.info(f"Subprocess completed with return code: {return_code}")
+    
+    # Wait for output thread to finish reading remaining output
+    output_thread.join(timeout=5)
+    
+    # Final progress update
+    if progress_state["progress_percent"] < 100:
+        # Check if final video exists
+        final_video = output_path / "final_video.mp4"
+        if final_video.exists():
+            progress_state["progress_percent"] = 100
+            progress_state["current_step"] = None
+            progress_state["status"] = "completed"
+            update_progress_from_line("Pipeline complete!")
+    
+except subprocess.TimeoutExpired:
+    logger.error(f"Subprocess timed out after {timeout_seconds} seconds")
+    # Try graceful termination first
+    try:
+        process.terminate()
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        # Force kill if it doesn't terminate
+        logger.warning("Subprocess didn't terminate, forcing kill")
+        process.kill()
+        process.wait()
+    return_code = -1
+    raise Exception(f"Pipeline timed out after {timeout_seconds} seconds")
+finally:
+    # Ensure log file is closed
+    try:
+        if not log_file.closed:
+            log_file.close()
+    except:
+        pass
+```
+
+---
+
+### Step 5: Remove Old File-Based Progress Function
+
+**File:** `web/tasks.py`
+
+**You can keep `update_job_progress_from_files()` as a fallback, but it won't be used in the main flow anymore.**
+
+**Optional:** Remove the background thread that calls `update_job_progress_from_files()` since we're now parsing output in real-time.
+
+---
+
+### Step 6: Test the Implementation
+
+1. **Generate a test video:**
+   - Submit a paper ID
+   - Watch the status page
+
+2. **Verify real-time updates:**
+   - Progress should update immediately when each step completes
+   - No 5-second delay
+   - Progress bar should be smooth
+
+3. **Check logs:**
+   - Look for "Progress updated: X%, step: Y" messages
+   - Should see updates as pipeline runs
+
+4. **Test error handling:**
+   - Try with invalid paper ID
+   - Should detect failure immediately from log output
+
+---
+
+## Expected Behavior
+
+**Before (file-based):**
+- Progress updates every 5 seconds (if background thread works)
+- May miss updates if files aren't immediately visible
+- Unreliable on different file systems
+
+**After (real-time parsing):**
+- Progress updates **immediately** when pipeline logs step completion
+- No file system timing issues
+- More reliable and responsive
+- Works consistently across platforms
+
+---
+
+## Files to Modify
+
+1. **`web/tasks.py`**:
+   - Change subprocess to use `stdout=subprocess.PIPE`
+   - Add `_parse_pipeline_progress()` function
+   - Replace background thread with real-time output reading
+   - Update process waiting logic
+
+**No changes needed to:**
+- `web/views.py` - Still reads from database
+- `web/models.py` - Model stays the same
+- Pipeline code - No changes needed
+
+---
+
+## Troubleshooting
+
+### Problem: Progress still not updating
+
+**Check:**
+1. Is the output thread running? Look for "Started real-time output parsing thread" in logs
+2. Are pipeline log messages appearing? Check `pipeline.log` file
+3. Is the database being updated? Check for "Progress updated" log messages
+
+**Fix:**
+- Ensure `PYTHONUNBUFFERED=1` is set (already done)
+- Check that pipeline actually logs step completions
+- Verify database connections are being closed properly
+
+### Problem: Log file not being written
+
+**Fix:**
+- Ensure `log_file.write()` and `log_file.flush()` are called
+- Check file permissions
+- Verify `log_path` is correct
+
+### Problem: Thread hanging
+
+**Fix:**
+- Ensure `output_thread.join(timeout=5)` has a timeout
+- Make thread daemon=True so it doesn't block shutdown
+- Check that process.stdout is being read correctly
+
+---
+
+## Benefits of This Approach
+
+✅ **Real-time updates** - Progress updates immediately when steps complete  
+✅ **No file system issues** - Doesn't depend on file visibility  
+✅ **More reliable** - Based on actual pipeline output, not file existence  
+✅ **Better error detection** - Can detect failures from log output immediately  
+✅ **Works across platforms** - No file system timing differences  
+✅ **No external dependencies** - Uses existing pipeline logging  
+
+---
+
+### 3. Celery Production Deployment
 **Status:** UI exists, backend processing incomplete  
 **Priority:** 🟠 High  
 **Estimated Effort:** 3-4 hours
@@ -389,55 +710,9 @@ Once Railway Volumes are working:
 
 ---
 
-### 4. Secrets Management
-**Status:** Mostly complete (needs production verification)  
-**Priority:** 🟡 Medium  
-**Estimated Effort:** 30 minutes (verification)
-
-**What needs to be done:**
-- Create `.env.example` template file
-- Document all required environment variables
-- Set up secure secret storage for production (Railway secrets manager)
-- Remove any hardcoded secrets (if any)
-- Add secret rotation documentation
-
-**Required secrets:**
-- `GEMINI_API_KEY` - Google Gemini API
-- `RUNWAYML_API_SECRET` - Runway ML API
-- `SECRET_KEY` - Django secret key
-- `DATABASE_URL` - PostgreSQL connection string (production)
-- `CELERY_BROKER_URL` - Redis connection (when Celery is integrated)
-- `VIDEO_ACCESS_CODE` - Access code for video generation (new)
-
-**Action items:**
-- [x] Create `.env.example` with all required variables
-- [x] Document secret management in deployment guide (in .env.example)
-- [ ] Verify no secrets in code or git history
-- [ ] Set up Railway environment variables
-- [x] Document code distribution process for `VIDEO_ACCESS_CODE` (in .env.example)
-
 ---
 
 ## 📋 Medium Priority (Feature Enhancements)
-
-### 3. Celery Production Deployment
-**Status:** ✅ Implemented locally (needs production setup)  
-**Priority:** 🟠 High  
-**Estimated Effort:** 1 hour
-
-**What needs to be done:**
-- Set up Redis service on Railway
-- Configure `CELERY_BROKER_URL` environment variable
-- Test that tasks survive server restart in production
-- Verify error handling works in production
-
-**Action items:**
-- [ ] Set up Redis service on Railway
-- [ ] Configure `CELERY_BROKER_URL` environment variable
-- [ ] Test that tasks survive server restart (production)
-- [ ] Test error handling with invalid inputs (production)
-
----
 
 ### 4. Complete File Upload Feature
 **Status:** UI exists, backend processing incomplete  
@@ -481,38 +756,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 5. Secrets Management
-**Status:** Mostly complete (needs production verification)  
-**Priority:** 🟡 Medium  
-**Estimated Effort:** 30 minutes (verification)
-
-**What needs to be done:**
-- Create `.env.example` template file
-- Document all required environment variables
-- Set up secure secret storage for production (Railway secrets manager)
-- Remove any hardcoded secrets (if any)
-- Add secret rotation documentation
-
-**Required secrets:**
-- `GEMINI_API_KEY` - Google Gemini API
-- `RUNWAYML_API_SECRET` - Runway ML API
-- `SECRET_KEY` - Django secret key
-- `DATABASE_URL` - PostgreSQL connection string (production)
-- `CELERY_BROKER_URL` - Redis connection (when Celery is integrated)
-- `VIDEO_ACCESS_CODE` - Access code for video generation (new)
-
-**Action items:**
-- [x] Create `.env.example` with all required variables
-- [x] Document secret management in deployment guide (in .env.example)
-- [ ] Verify no secrets in code or git history
-- [ ] Set up Railway environment variables
-- [x] Document code distribution process for `VIDEO_ACCESS_CODE` (in .env.example)
-
----
-
-## 📋 Medium Priority (Feature Enhancements)
-
-### 6. Video Management UI
+### 5. Video Management UI
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 4-5 hours
@@ -532,7 +776,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 7. Error Monitoring & Logging
+### 6. Error Monitoring & Logging
 **Status:** Basic logging exists  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -551,7 +795,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 8. Rate Limiting & API Quota Management
+### 7. Rate Limiting & API Quota Management
 **Status:** Not implemented  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -572,7 +816,7 @@ Once Railway Volumes are working:
 
 ## 🔧 Low Priority (Nice to Have)
 
-### 9. Email Verification
+### 8. Email Verification
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -585,7 +829,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 10. Password Reset
+### 9. Password Reset
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -598,7 +842,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 11. User Profiles
+### 10. User Profiles
 **Status:** Not implemented  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 3-4 hours
@@ -611,7 +855,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 12. Django Admin Configuration
+### 11. Django Admin Configuration
 **Status:** Basic admin, not customized  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 1-2 hours
@@ -626,7 +870,7 @@ Once Railway Volumes are working:
 
 ## 📚 Documentation Tasks
 
-### 13. Deployment Guide
+### 12. Deployment Guide
 **Status:** Partial (Railway setup exists)  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 2-3 hours
@@ -640,7 +884,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 14. Architecture Documentation
+### 13. Architecture Documentation
 **Status:** Not created  
 **Priority:** 🟢 Low  
 **Estimated Effort:** 2-3 hours
@@ -655,7 +899,7 @@ Once Railway Volumes are working:
 
 ## 🧪 Testing & Quality
 
-### 15. Add Unit Tests
+### 14. Add Unit Tests
 **Status:** No tests exist  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 6-8 hours
@@ -669,7 +913,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 16. Real-Time Status Updates (WebSockets/SSE)
+### 15. Real-Time Status Updates (WebSockets/SSE)
 **Status:** Not implemented  
 **Priority:** 🟢 Low (Nice to Have)  
 **Estimated Effort:** 4-6 hours
@@ -708,7 +952,7 @@ Once Railway Volumes are working:
 
 ---
 
-### 17. Error Handling Improvements
+### 16. Error Handling Improvements
 **Status:** Basic error handling  
 **Priority:** 🟡 Medium  
 **Estimated Effort:** 3-4 hours
@@ -723,29 +967,13 @@ Once Railway Volumes are working:
 
 ## 📊 Progress Tracking
 
-### Completed ✅
-- [x] Core video generation pipeline
-- [x] Django web application
-- [x] User authentication
-- [x] REST API endpoints
-- [x] Basic error handling
-- [x] Railway deployment configuration
-- [x] Celery task queue integration (local testing complete)
-- [x] Access control with access code validation
-- [x] Error handling and user feedback in Celery tasks
-- [x] Secrets management documentation (.env.example)
-- [x] **Database models for job tracking (VideoGenerationJob model)**
-- [x] **Real-time progress tracking from database**
-- [x] **"My Videos" archive page (/my-videos/)**
-- [x] **User-specific video history**
-
 ### In Progress 🚧
 - [ ] **Cloud storage integration (CRITICAL - blocking production)**
+- [ ] **Fix progress tracking - implement real-time pipeline output parsing**
 - [ ] Celery production deployment (Redis setup on Railway)
 - [ ] File upload processing (currently fails - uses filename as PubMed ID)
 
 ### Planned 📅
-- [ ] Cloud storage integration (must be done before production)
 - [ ] Video management UI enhancements (delete, download, search)
 - [ ] Error monitoring (Sentry)
 - [ ] Rate limiting
@@ -760,11 +988,10 @@ Once Railway Volumes are working:
 ## 🎯 Recommended Implementation Order
 
 **Sprint 1 (Production Readiness - URGENT):**
-1. ✅ Database models for job tracking (DONE)
+1. 🔴 **Fix progress tracking - real-time pipeline output parsing (CRITICAL)**
 2. 🔴 **Cloud storage integration (CRITICAL - DO THIS NEXT)**
 3. Celery production deployment (Redis setup on Railway)
 4. Complete file upload feature
-5. ✅ Secrets management (mostly complete)
 
 **Sprint 2 (Core Features):**
 6. Video management UI enhancements (delete, download, search)

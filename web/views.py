@@ -1092,14 +1092,25 @@ def my_videos(request):
                 }
                 
                 # Check if video file exists
-                if job.status == 'completed' and job.paper_id:
+                has_file = False
+                if job.paper_id:
                     try:
                         video_path = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
                         if video_path.exists():
+                            has_file = True
                             video_data['has_video'] = True
                             video_data['video_url'] = reverse('serve_video', args=[job.paper_id])
                     except Exception as e:
                         logger.warning(f"Error checking video file for job {job.id}: {e}")
+                
+                # Filter out failed jobs that don't have files (likely from wiped volumes)
+                # Only show failed jobs if they have files OR if they're recent (within last 7 days)
+                if job.status == 'failed' and not has_file:
+                    from django.utils import timezone
+                    from datetime import timedelta
+                    # Skip failed jobs without files that are older than 7 days
+                    if job.created_at and (timezone.now() - job.created_at) > timedelta(days=7):
+                        continue  # Skip this job - it's an old failed job without files
                 
                 videos.append(video_data)
             except Exception as e:

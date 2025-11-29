@@ -24,6 +24,92 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+def _parse_pipeline_progress(line: str, current_progress: dict) -> Optional[dict]:
+    """
+    Parse a single line of pipeline output to detect progress updates.
+    
+    Args:
+        line: A line from pipeline stdout/stderr
+        current_progress: Current progress dict with keys:
+            - progress_percent: int (0-100)
+            - current_step: str or None
+            - completed_steps: list of step names
+            - status: str (running, failed, etc.)
+    
+    Returns:
+        Updated progress dict if progress changed, None otherwise
+    """
+    line_lower = line.lower()
+    
+    # Step completion markers - based on actual pipeline.py logging
+    step_markers = {
+        "fetch-paper": {
+            "start": "step: fetch-paper",
+            "complete": "complete",  # "✓ Complete" or "✓ Already complete, skipping"
+            "percent": 20,
+        },
+        "generate-script": {
+            "start": "step: generate-script",
+            "complete": "complete",
+            "percent": 40,
+        },
+        "generate-audio": {
+            "start": "step: generate-audio",
+            "complete": "complete",
+            "percent": 60,
+        },
+        "generate-videos": {
+            "start": "step: generate-videos",
+            "complete": "complete",
+            "percent": 80,
+        },
+        "add-captions": {
+            "start": "step: add-captions",
+            "complete": "complete",
+            "percent": 100,
+        },
+    }
+    
+    # Check for step completions
+    for step_name, markers in step_markers.items():
+        if markers["start"] in line_lower:
+            # Check if step completed (look for "complete" or "✓" in the line)
+            if markers["complete"] in line_lower or "✓" in line:
+                # Step completed
+                completed_steps = current_progress.get("completed_steps", [])
+                if step_name not in completed_steps:
+                    updated = current_progress.copy()
+                    updated["progress_percent"] = markers["percent"]
+                    updated["current_step"] = None
+                    if "completed_steps" not in updated:
+                        updated["completed_steps"] = []
+                    updated["completed_steps"] = completed_steps + [step_name]
+                    return updated
+            else:
+                # Step started but not completed yet
+                completed_steps = current_progress.get("completed_steps", [])
+                if step_name not in completed_steps:
+                    updated = current_progress.copy()
+                    updated["current_step"] = step_name
+                    return updated
+    
+    # Check for pipeline completion
+    if "pipeline complete!" in line_lower:
+        updated = current_progress.copy()
+        updated["progress_percent"] = 100
+        updated["current_step"] = None
+        updated["status"] = "completed"
+        return updated
+    
+    # Check for failures
+    if "✗" in line or "pipelineerror" in line_lower or ("failed" in line_lower and "step" in line_lower):
+        updated = current_progress.copy()
+        updated["status"] = "failed"
+        return updated
+    
+    return None  # No progress change
+
+
 @shared_task(
     bind=True,
     name="web.tasks.generate_video_task",
@@ -193,73 +279,142 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
         # Ensure Python doesn't buffer output so we see logs in real-time
         env["PYTHONUNBUFFERED"] = "1"
         
-        # Run pipeline and capture output
+        # Run pipeline and capture output in real-time
         process = None
+        log_file = None
         try:
-            with open(log_path, "ab") as log_file:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                    env=env,
-                    cwd=str(settings.BASE_DIR),
-                    start_new_session=True,  # Create new process group
-                )
-                
-                logger.info(f"Started subprocess with PID: {process.pid}")
-                
-                # Start a background thread to periodically update progress
-                def update_progress_periodically():
-                    """Update progress in database while pipeline is running."""
-                    while process.poll() is None:  # While process is still running
-                        try:
-                            # Close any stale database connections before updating
-                            from django.db import connections
-                            connections.close_all()
-                            
-                            # Update progress based on file existence
-                            update_job_progress_from_files(pmid, self.request.id)
-                            
-                            # Close connections after update to prevent connection leaks
-                            connections.close_all()
-                            
-                            time.sleep(5)  # Update every 5 seconds
-                        except Exception as e:
-                            logger.warning(f"Error updating progress: {e}", exc_info=True)
-                            # Close connections on error too
-                            try:
-                                from django.db import connections
-                                connections.close_all()
-                            except:
-                                pass
-                            time.sleep(5)  # Continue even if update fails
-                
-                progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
-                progress_thread.start()
-                logger.info("Started background progress update thread")
-                
-                # Wait for process to complete with timeout handling
-                # Use Celery's time limit minus a buffer for cleanup
-                timeout_seconds = settings.CELERY_TASK_TIME_LIMIT - 60  # Leave 60s buffer
-                try:
-                    return_code = process.wait(timeout=timeout_seconds)
-                    logger.info(f"Subprocess completed with return code: {return_code}")
+            # Open log file for writing (text mode with UTF-8 encoding)
+            log_file = open(log_path, "a", encoding="utf-8")
+            
+            # Create subprocess with PIPE for stdout so we can read it in real-time
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,  # Changed from log_file to PIPE
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                env=env,
+                cwd=str(settings.BASE_DIR),
+                start_new_session=True,  # Create new process group
+                text=True,  # Text mode for line-by-line reading
+                bufsize=1,  # Line buffered
+            )
+            
+            logger.info(f"Started subprocess with PID: {process.pid}")
+            
+            # Initialize progress state for real-time tracking
+            progress_state = {
+                "progress_percent": 0,
+                "current_step": "starting",
+                "completed_steps": [],
+                "status": "running",
+            }
+            
+            def update_progress_from_line(line: str):
+                """Update progress state from a pipeline output line."""
+                parsed = _parse_pipeline_progress(line, progress_state)
+                if parsed:
+                    progress_state.update(parsed)
                     
-                    # Final progress update after completion
-                    update_job_progress_from_files(pmid, self.request.id)
-                except subprocess.TimeoutExpired:
-                    logger.error(f"Subprocess timed out after {timeout_seconds} seconds")
-                    # Try graceful termination first
+                    # Update database immediately
                     try:
-                        process.terminate()
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        # Force kill if it doesn't terminate
-                        logger.warning("Subprocess didn't terminate, forcing kill")
-                        process.kill()
-                        process.wait()
-                    return_code = -1
-                    raise Exception(f"Pipeline timed out after {timeout_seconds} seconds")
+                        from django.db import connections
+                        connections.close_all()
+                        
+                        from web.models import VideoGenerationJob
+                        from django.utils import timezone
+                        
+                        job = VideoGenerationJob.objects.get(task_id=self.request.id)
+                        
+                        # Only update if job is still running
+                        if job.status in ['pending', 'running']:
+                            job.progress_percent = progress_state["progress_percent"]
+                            job.current_step = progress_state.get("current_step")
+                            
+                            if progress_state.get("status") == "failed":
+                                job.status = "failed"
+                            
+                            if progress_state["progress_percent"] == 100:
+                                job.status = "completed"
+                                job.current_step = None
+                                job.completed_at = timezone.now()
+                            
+                            job.save(update_fields=[
+                                'progress_percent', 'current_step', 'status', 
+                                'completed_at', 'updated_at'
+                            ])
+                            
+                            logger.info(
+                                f"Progress updated: {job.progress_percent}%, "
+                                f"step: {job.current_step}"
+                            )
+                        
+                        connections.close_all()
+                    except Exception as e:
+                        logger.warning(f"Failed to update progress from line: {e}")
+            
+            # Start thread to read output and update progress in real-time
+            def read_output_and_update_progress():
+                """Read subprocess output line-by-line and update progress."""
+                try:
+                    for line in process.stdout:
+                        # Write to log file (line already includes newline)
+                        log_file.write(line)
+                        log_file.flush()
+                        
+                        # Parse for progress updates
+                        update_progress_from_line(line)
+                        
+                except Exception as e:
+                    logger.error(f"Error reading subprocess output: {e}", exc_info=True)
+                finally:
+                    try:
+                        log_file.close()
+                    except:
+                        pass
+            
+            # Start output reading thread
+            output_thread = threading.Thread(target=read_output_and_update_progress, daemon=True)
+            output_thread.start()
+            logger.info("Started real-time output parsing thread")
+            
+            # Wait for process to complete with timeout handling
+            timeout_seconds = settings.CELERY_TASK_TIME_LIMIT - 60  # Leave 60s buffer
+            try:
+                return_code = process.wait(timeout=timeout_seconds)
+                logger.info(f"Subprocess completed with return code: {return_code}")
+                
+                # Wait for output thread to finish reading remaining output
+                output_thread.join(timeout=5)
+                
+                # Final progress update
+                if progress_state["progress_percent"] < 100:
+                    # Check if final video exists
+                    final_video = output_path / "final_video.mp4"
+                    if final_video.exists():
+                        progress_state["progress_percent"] = 100
+                        progress_state["current_step"] = None
+                        progress_state["status"] = "completed"
+                        update_progress_from_line("Pipeline complete!")
+                
+            except subprocess.TimeoutExpired:
+                logger.error(f"Subprocess timed out after {timeout_seconds} seconds")
+                # Try graceful termination first
+                try:
+                    process.terminate()
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't terminate
+                    logger.warning("Subprocess didn't terminate, forcing kill")
+                    process.kill()
+                    process.wait()
+                return_code = -1
+                raise Exception(f"Pipeline timed out after {timeout_seconds} seconds")
+            finally:
+                # Ensure log file is closed
+                try:
+                    if log_file and not log_file.closed:
+                        log_file.close()
+                except:
+                    pass
         except subprocess.SubprocessError as e:
             logger.exception(f"Subprocess error: {e}")
             return_code = -1
@@ -274,6 +429,12 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         process.wait()
                     except:
                         pass
+            # Ensure log file is closed
+            try:
+                if log_file and not log_file.closed:
+                    log_file.close()
+            except:
+                pass
             raise Exception(f"Failed to start or run pipeline subprocess: {e}")
         except Exception as e:
             logger.exception(f"Unexpected error during subprocess execution: {e}")
@@ -288,6 +449,12 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         process.wait()
                     except:
                         pass
+            # Ensure log file is closed
+            try:
+                if log_file and not log_file.closed:
+                    log_file.close()
+            except:
+                pass
             return_code = -1
             raise
         
