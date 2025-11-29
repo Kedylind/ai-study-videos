@@ -501,12 +501,40 @@ def debug_video_files(request, pmid: str):
                                 "modified": stat.st_mtime,
                             })
                         elif item.is_dir():
-                            stat = item.stat()
-                            result["media_root_contents"].append({
+                            # Calculate directory size
+                            dir_size = 0
+                            file_count = 0
+                            try:
+                                for f in item.rglob('*'):
+                                    if f.is_file():
+                                        try:
+                                            dir_size += f.stat().st_size
+                                            file_count += 1
+                                        except:
+                                            pass
+                            except:
+                                pass
+                            
+                            dir_info = {
                                 "name": item.name,
                                 "type": "directory",
-                                "size": sum(f.stat().st_size for f in item.rglob('*') if f.is_file()) if item.exists() else 0,
-                            })
+                                "size": dir_size,
+                                "file_count": file_count,
+                            }
+                            
+                            # Check if this directory contains final_video.mp4
+                            final_video_in_dir = item / "final_video.mp4"
+                            if final_video_in_dir.exists():
+                                try:
+                                    dir_info["has_final_video"] = True
+                                    dir_info["final_video_size"] = final_video_in_dir.stat().st_size
+                                except:
+                                    dir_info["has_final_video"] = True
+                                    dir_info["final_video_size"] = "unknown"
+                            else:
+                                dir_info["has_final_video"] = False
+                            
+                            result["media_root_contents"].append(dir_info)
                     except Exception as e:
                         result["media_root_contents"].append({
                             "name": item.name if hasattr(item, 'name') else str(item),
