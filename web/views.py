@@ -412,6 +412,25 @@ def test_volume_write(request):
             celery_task = test_volume_write_task.delay()
             celery_result = celery_task.get(timeout=10)
             result["celery_test"] = celery_result
+            
+            # CRITICAL: Check if Server can actually SEE the file that Celery wrote
+            # This is the real test - can Server read files from Celery's filesystem?
+            celery_test_file = media_root / ".volume_test" / "test_write_celery.txt"
+            result["cross_service_check"] = {
+                "celery_file_path": str(celery_test_file),
+                "server_can_see_celery_file": celery_test_file.exists(),
+            }
+            if celery_test_file.exists():
+                try:
+                    celery_content = celery_test_file.read_text()
+                    result["cross_service_check"]["server_can_read_celery_file"] = True
+                    result["cross_service_check"]["file_content_preview"] = celery_content[:200]
+                except Exception as e:
+                    result["cross_service_check"]["server_can_read_celery_file"] = False
+                    result["cross_service_check"]["read_error"] = str(e)
+            else:
+                result["cross_service_check"]["server_can_read_celery_file"] = False
+                result["cross_service_check"]["warning"] = "Server cannot see file written by Celery! They are on different filesystems."
         except Exception as e:
             result["celery_test"] = {
                 "success": False,
@@ -421,21 +440,25 @@ def test_volume_write(request):
                 "recommendation": "Check that Celery worker is running and volume is mounted on Celery service.",
             }
     
-    # Overall status
+    # Overall status - now includes cross-service visibility check
     try:
         server_ok = result.get("server_test", {}).get("success", False)
         celery_test_result = result.get("celery_test", {})
         celery_ok = celery_test_result.get("success", False) if celery_test_result else None
+        cross_service_ok = result.get("cross_service_check", {}).get("server_can_see_celery_file", None)
         
         if celery_ok is None:
             # Only tested server
             result["overall_status"] = "OK" if server_ok else "FAILED"
             result["recommendation"] = "Server can access volume" if server_ok else "Server cannot access volume. Mount volume on Server service in Railway."
         else:
-            # Tested both
-            if server_ok and celery_ok:
+            # Tested both - now check cross-service visibility
+            if server_ok and celery_ok and cross_service_ok:
                 result["overall_status"] = "OK"
-                result["recommendation"] = "Both Server and Celery can access the volume. Setup is correct!"
+                result["recommendation"] = "Both Server and Celery can access the SAME volume. Setup is correct!"
+            elif server_ok and celery_ok and not cross_service_ok:
+                result["overall_status"] = "FAILED"
+                result["recommendation"] = "⚠️ CRITICAL: Server and Celery are on DIFFERENT filesystems! Celery can write, but Server cannot see Celery's files. Mount the same 'celery-volume' on the Server service in Railway."
             elif not server_ok and celery_ok:
                 result["overall_status"] = "PARTIAL"
                 result["recommendation"] = "Celery can write, but Server cannot read. Mount the same volume on Server service in Railway."
