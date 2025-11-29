@@ -474,15 +474,47 @@ def debug_video_files(request, pmid: str):
     import traceback
     
     try:
-        output_dir = Path(settings.MEDIA_ROOT) / pmid
+        media_root = Path(settings.MEDIA_ROOT)
+        output_dir = media_root / pmid
         result = {
             "pmid": pmid,
             "output_dir": str(output_dir),
             "output_dir_exists": output_dir.exists(),
-            "MEDIA_ROOT": str(settings.MEDIA_ROOT),
+            "MEDIA_ROOT": str(media_root),
+            "MEDIA_ROOT_exists": media_root.exists(),
             "files": [],
             "directories": [],
+            "media_root_contents": [],  # List everything in MEDIA_ROOT
         }
+        
+        # First, list everything in MEDIA_ROOT to see what's actually on the volume
+        if media_root.exists():
+            try:
+                for item in media_root.iterdir():
+                    try:
+                        if item.is_file():
+                            stat = item.stat()
+                            result["media_root_contents"].append({
+                                "name": item.name,
+                                "type": "file",
+                                "size": stat.st_size,
+                                "modified": stat.st_mtime,
+                            })
+                        elif item.is_dir():
+                            stat = item.stat()
+                            result["media_root_contents"].append({
+                                "name": item.name,
+                                "type": "directory",
+                                "size": sum(f.stat().st_size for f in item.rglob('*') if f.is_file()) if item.exists() else 0,
+                            })
+                    except Exception as e:
+                        result["media_root_contents"].append({
+                            "name": item.name if hasattr(item, 'name') else str(item),
+                            "type": "unknown",
+                            "error": str(e),
+                        })
+            except Exception as e:
+                result["media_root_scan_error"] = str(e)
         
         if output_dir.exists():
             try:
