@@ -471,52 +471,92 @@ def debug_video_files(request, pmid: str):
     from pathlib import Path
     from django.conf import settings
     from django.http import JsonResponse
+    import traceback
     
-    output_dir = Path(settings.MEDIA_ROOT) / pmid
-    result = {
-        "pmid": pmid,
-        "output_dir": str(output_dir),
-        "output_dir_exists": output_dir.exists(),
-        "MEDIA_ROOT": str(settings.MEDIA_ROOT),
-        "files": [],
-        "directories": [],
-    }
-    
-    if output_dir.exists():
-        # List all files recursively
-        for file_path in output_dir.rglob("*"):
-            if file_path.is_file():
-                try:
-                    stat = file_path.stat()
-                    result["files"].append({
-                        "path": str(file_path.relative_to(output_dir)),
-                        "full_path": str(file_path),
-                        "exists": file_path.exists(),
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime,
-                    })
-                except Exception as e:
-                    result["files"].append({
-                        "path": str(file_path.relative_to(output_dir)),
-                        "full_path": str(file_path),
-                        "exists": file_path.exists(),
-                        "error": str(e),
-                    })
+    try:
+        output_dir = Path(settings.MEDIA_ROOT) / pmid
+        result = {
+            "pmid": pmid,
+            "output_dir": str(output_dir),
+            "output_dir_exists": output_dir.exists(),
+            "MEDIA_ROOT": str(settings.MEDIA_ROOT),
+            "files": [],
+            "directories": [],
+        }
         
-        # List directories
-        for dir_path in output_dir.rglob("*"):
-            if dir_path.is_dir():
-                result["directories"].append(str(dir_path.relative_to(output_dir)))
-    
-    # Check specifically for final_video.mp4
-    final_video = output_dir / "final_video.mp4"
-    result["final_video_check"] = {
-        "expected_path": str(final_video),
-        "exists": final_video.exists(),
-        "size": final_video.stat().st_size if final_video.exists() else 0,
-    }
-    
-    return JsonResponse(result, indent=2)
+        if output_dir.exists():
+            try:
+                # List all files recursively
+                for file_path in output_dir.rglob("*"):
+                    try:
+                        if file_path.is_file():
+                            try:
+                                stat = file_path.stat()
+                                result["files"].append({
+                                    "path": str(file_path.relative_to(output_dir)),
+                                    "full_path": str(file_path),
+                                    "exists": file_path.exists(),
+                                    "size": stat.st_size,
+                                    "modified": stat.st_mtime,
+                                })
+                            except Exception as e:
+                                result["files"].append({
+                                    "path": str(file_path) if not str(file_path).startswith(str(output_dir)) else str(file_path.relative_to(output_dir)),
+                                    "full_path": str(file_path),
+                                    "exists": file_path.exists(),
+                                    "error": str(e),
+                                })
+                        elif file_path.is_dir():
+                            try:
+                                rel_path = str(file_path.relative_to(output_dir))
+                                if rel_path not in result["directories"]:
+                                    result["directories"].append(rel_path)
+                            except Exception:
+                                # If relative_to fails, just use the full path
+                                if str(file_path) not in result["directories"]:
+                                    result["directories"].append(str(file_path))
+                    except Exception as e:
+                        # Skip files/dirs we can't access
+                        result["files"].append({
+                            "path": "unknown",
+                            "full_path": str(file_path) if hasattr(file_path, '__str__') else "unknown",
+                            "error": str(e),
+                        })
+            except Exception as e:
+                result["scan_error"] = str(e)
+                result["scan_traceback"] = traceback.format_exc()
+        
+        # Check specifically for final_video.mp4
+        final_video = output_dir / "final_video.mp4"
+        try:
+            final_video_exists = final_video.exists()
+            final_video_size = 0
+            if final_video_exists:
+                try:
+                    final_video_size = final_video.stat().st_size
+                except Exception as e:
+                    final_video_size = f"error: {str(e)}"
+            
+            result["final_video_check"] = {
+                "expected_path": str(final_video),
+                "exists": final_video_exists,
+                "size": final_video_size,
+            }
+        except Exception as e:
+            result["final_video_check"] = {
+                "expected_path": str(final_video),
+                "error": str(e),
+            }
+        
+        return JsonResponse(result, indent=2)
+    except Exception as e:
+        import sys
+        return JsonResponse({
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": traceback.format_exc(),
+            "pmid": pmid,
+        }, status=500)
 
 
 def home(request):
