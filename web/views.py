@@ -798,6 +798,9 @@ def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = 
         try:
             from django.contrib.auth.models import User
             from web.models import VideoGenerationJob
+            import logging
+            db_logger = logging.getLogger(__name__)
+            
             try:
                 user = User.objects.get(pk=user_id)
                 job, created = VideoGenerationJob.objects.get_or_create(
@@ -817,17 +820,15 @@ def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = 
                     job.current_step = None
                     job.paper_id = pmid  # Update paper_id in case it changed
                     job.save(update_fields=['status', 'progress_percent', 'current_step', 'paper_id', 'updated_at'])
-                logger.info(f"Created/updated job record for {pmid} with task_id {task.id}")
+                db_logger.info(f"Created/updated job record for {pmid} with task_id {task.id}")
             except User.DoesNotExist:
-                logger.warning(f"User {user_id} does not exist, skipping database job tracking")
+                db_logger.warning(f"User {user_id} does not exist, skipping database job tracking")
             except Exception as db_error:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Failed to create/update job record in database: {db_error}", exc_info=True)
+                db_logger.error(f"Failed to create/update job record in database: {db_error}", exc_info=True)
         except Exception as e:
             import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to create job record: {e}", exc_info=True)
+            db_logger = logging.getLogger(__name__)
+            db_logger.error(f"Failed to create job record: {e}", exc_info=True)
     
     # Task is now queued and will be processed by a Celery worker
     # Status can be checked via the task ID (Celery result backend) or by reading the task_result.json file
@@ -912,34 +913,70 @@ def pipeline_status(request, pmid: str):
         # Try to find job for this paper_id and user (if authenticated)
         if request.user.is_authenticated:
             try:
-                job = VideoGenerationJob.objects.get(paper_id=pmid, user=request.user)
-                # Update progress from files if job is running
-                if job.status in ['pending', 'running']:
-                    task_id_file = output_dir / "task_id.txt"
-                    task_id = None
-                    if task_id_file.exists():
-                        try:
-                            with open(task_id_file, "r") as f:
-                                task_id = f.read().strip()
-                        except:
-                            pass
-                    update_job_progress_from_files(pmid, task_id)
-                    job.refresh_from_db()
-                
-                # Convert job to progress dict
-                completed_steps = _get_completed_steps_from_progress(job.progress_percent)
-                progress = {
-                    "status": job.status,
-                    "current_step": job.current_step,
-                    "completed_steps": completed_steps,
-                    "progress_percent": job.progress_percent,
-                    "total_steps": 5,
-                }
-                if job.status == 'failed':
-                    progress["error"] = job.error_message
-                    progress["error_type"] = job.error_type
+                # Use filter().first() instead of get() to handle multiple jobs
+                job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+                if not job:
+                    # No job found, fall through to file-based check
+                    pass
+                else:
+                    # Update progress from files if job is running
+                    if job.status in ['pending', 'running']:
+                        task_id_file = output_dir / "task_id.txt"
+                        task_id = None
+                        if task_id_file.exists():
+                            try:
+                                with open(task_id_file, "r") as f:
+                                    task_id = f.read().strip()
+                            except:
+                                pass
+                        update_job_progress_from_files(pmid, task_id)
+                        job.refresh_from_db()
+                    
+                    # Convert job to progress dict
+                    completed_steps = _get_completed_steps_from_progress(job.progress_percent)
+                    progress = {
+                        "status": job.status,
+                        "current_step": job.current_step,
+                        "completed_steps": completed_steps,
+                        "progress_percent": job.progress_percent,
+                        "total_steps": 5,
+                    }
+                    if job.status == 'failed':
+                        progress["error"] = job.error_message
+                        progress["error_type"] = job.error_type
+            except VideoGenerationJob.MultipleObjectsReturned:
+                # Multiple jobs found - get the most recent one
+                job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+                if job:
+                    if job.status in ['pending', 'running']:
+                        task_id_file = output_dir / "task_id.txt"
+                        task_id = None
+                        if task_id_file.exists():
+                            try:
+                                with open(task_id_file, "r") as f:
+                                    task_id = f.read().strip()
+                            except:
+                                pass
+                        update_job_progress_from_files(pmid, task_id)
+                        job.refresh_from_db()
+                    
+                    completed_steps = _get_completed_steps_from_progress(job.progress_percent)
+                    progress = {
+                        "status": job.status,
+                        "current_step": job.current_step,
+                        "completed_steps": completed_steps,
+                        "progress_percent": job.progress_percent,
+                        "total_steps": 5,
+                    }
+                    if job.status == 'failed':
+                        progress["error"] = job.error_message
+                        progress["error_type"] = job.error_type
             except VideoGenerationJob.DoesNotExist:
                 pass  # Fall through to file-based check
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error getting progress from database: {e}")
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)

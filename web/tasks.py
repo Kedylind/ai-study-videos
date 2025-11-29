@@ -70,11 +70,14 @@ def _parse_pipeline_progress(line: str, current_progress: dict) -> Optional[dict
         },
     }
     
-    # Check for step completions
+    # Check for step completions - look for "✓ Complete" or "✓ Already complete"
+    # Pipeline logs: "Step: fetch-paper" then "  ✓ Complete" or "  ✓ Already complete, skipping"
     for step_name, markers in step_markers.items():
-        if markers["start"] in line_lower:
-            # Check if step completed (look for "complete" or "✓" in the line)
-            if markers["complete"] in line_lower or "✓" in line:
+        # Check if this step is mentioned in the line
+        step_keyword = step_name.replace("-", " ")
+        if markers["start"] in line_lower or f"step: {step_name}" in line_lower:
+            # Check if step completed - look for checkmark with "complete" or "already complete"
+            if "✓" in line and ("complete" in line_lower or "already" in line_lower):
                 # Step completed
                 completed_steps = current_progress.get("completed_steps", [])
                 if step_name not in completed_steps:
@@ -84,13 +87,25 @@ def _parse_pipeline_progress(line: str, current_progress: dict) -> Optional[dict
                     if "completed_steps" not in updated:
                         updated["completed_steps"] = []
                     updated["completed_steps"] = completed_steps + [step_name]
+                    logger.debug(f"Detected step completion: {step_name} -> {markers['percent']}%")
                     return updated
-            else:
-                # Step started but not completed yet
+            elif "step:" in line_lower and step_name in line_lower:
+                # Step started but not completed yet - update current step
                 completed_steps = current_progress.get("completed_steps", [])
-                if step_name not in completed_steps:
+                if step_name not in completed_steps and current_progress.get("current_step") != step_name:
                     updated = current_progress.copy()
                     updated["current_step"] = step_name
+                    # Set progress to previous step's completion or current step start
+                    if completed_steps:
+                        # Find the percent for the last completed step
+                        last_completed = completed_steps[-1]
+                        for sname, smarkers in step_markers.items():
+                            if sname == last_completed:
+                                updated["progress_percent"] = smarkers["percent"]
+                                break
+                    else:
+                        updated["progress_percent"] = 0
+                    logger.debug(f"Detected step start: {step_name}")
                     return updated
     
     # Check for pipeline completion
@@ -322,7 +337,13 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         from web.models import VideoGenerationJob
                         from django.utils import timezone
                         
-                        job = VideoGenerationJob.objects.get(task_id=self.request.id)
+                        try:
+                            job = VideoGenerationJob.objects.get(task_id=self.request.id)
+                        except VideoGenerationJob.DoesNotExist:
+                            # Job doesn't exist yet - might be created later, skip update
+                            logger.debug(f"Job not found for task_id {self.request.id}, skipping progress update")
+                            connections.close_all()
+                            return
                         
                         # Only update if job is still running
                         if job.status in ['pending', 'running']:
@@ -349,7 +370,12 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         
                         connections.close_all()
                     except Exception as e:
-                        logger.warning(f"Failed to update progress from line: {e}")
+                        logger.warning(f"Failed to update progress from line: {e}", exc_info=True)
+                        try:
+                            from django.db import connections
+                            connections.close_all()
+                        except:
+                            pass
             
             # Start thread to read output and update progress in real-time
             def read_output_and_update_progress():
@@ -375,6 +401,32 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
             output_thread = threading.Thread(target=read_output_and_update_progress, daemon=True)
             output_thread.start()
             logger.info("Started real-time output parsing thread")
+            
+            # Also start a background thread to periodically update progress from files
+            # This is a fallback in case real-time parsing misses updates
+            def update_progress_periodically():
+                """Periodically update progress from file existence (fallback)."""
+                while process.poll() is None:  # While process is still running
+                    try:
+                        from django.db import connections
+                        connections.close_all()
+                        
+                        # Update progress based on file existence as fallback
+                        update_job_progress_from_files(pmid, self.request.id)
+                        
+                        connections.close_all()
+                        time.sleep(10)  # Update every 10 seconds (less frequent than real-time)
+                    except Exception as e:
+                        logger.debug(f"Error in periodic progress update: {e}")
+                        try:
+                            connections.close_all()
+                        except:
+                            pass
+                        time.sleep(10)
+            
+            progress_fallback_thread = threading.Thread(target=update_progress_periodically, daemon=True)
+            progress_fallback_thread.start()
+            logger.info("Started fallback progress update thread")
             
             # Wait for process to complete with timeout handling
             timeout_seconds = settings.CELERY_TASK_TIME_LIMIT - 60  # Leave 60s buffer
