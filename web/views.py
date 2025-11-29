@@ -220,7 +220,10 @@ def static_debug(request):
             except Exception as e:
                 info["create_directory_error"] = str(e)
         
-        return JsonResponse(info, indent=2)
+        import json
+        response = JsonResponse(info)
+        response.content = json.dumps(info, indent=2)
+        return response
     except Exception as e:
         return JsonResponse({"error": str(e), "type": type(e).__name__}, status=500)
 
@@ -316,13 +319,21 @@ def debug_media_path(request):
                 "Ensure MEDIA_ROOT = BASE_DIR / 'media' in settings.py",
             ]
         
-        return JsonResponse(info, indent=2)
+        import json
+        response = JsonResponse(info)
+        # Format JSON for readability
+        response.content = json.dumps(info, indent=2)
+        return response
     except Exception as e:
-        return JsonResponse({
+        import json
+        error_data = {
             "error": str(e),
             "type": type(e).__name__,
             "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None
-        }, status=500)
+        }
+        response = JsonResponse(error_data, status=500)
+        response.content = json.dumps(error_data, indent=2)
+        return response
 
 
 def test_volume_write(request):
@@ -442,7 +453,10 @@ def test_volume_write(request):
         result["recommendation"] = "Error calculating overall status. Check individual test results."
         status_code = 500
     
-    return JsonResponse(result, indent=2, status=status_code)
+    import json
+    response = JsonResponse(result, status=status_code)
+    response.content = json.dumps(result, indent=2)
+    return response
 
 
 def home(request):
