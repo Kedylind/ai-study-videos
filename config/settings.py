@@ -145,11 +145,38 @@ if not DEBUG:
     STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 
 # Media files for generated outputs (videos, audio, metadata)
-MEDIA_URL = "/media/"
-# Allow MEDIA_ROOT to be overridden via environment variable (useful for Railway volumes)
-# Default: BASE_DIR / "media" (which resolves to /app/media in Railway containers)
-# For Railway volumes, mount the volume at /app/media and this will work automatically
-MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media"))) if os.getenv("MEDIA_ROOT") else BASE_DIR / "media"
+# Cloud Storage Configuration (Cloudflare R2)
+USE_CLOUD_STORAGE = os.getenv("USE_CLOUD_STORAGE", "False") == "True"
+
+if USE_CLOUD_STORAGE:
+    # Cloudflare R2 (S3-compatible)
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")  # R2 endpoint
+    AWS_S3_REGION_NAME = "auto"  # R2 uses "auto"
+    
+    # Storage settings
+    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+    
+    # Security & performance
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = "public-read"  # Videos are public (or use "private" for signed URLs)
+    AWS_S3_OBJECT_PARAMETERS = {
+        "CacheControl": "max-age=86400",  # 1 day cache
+    }
+    
+    # Media files will be stored in R2
+    # django-storages will handle URL construction automatically based on AWS_S3_ENDPOINT_URL
+    # For public access, R2 uses: https://<bucket-name>.<account-id>.r2.cloudflarestorage.com
+    # But django-storages constructs URLs automatically, so we don't need to set MEDIA_URL manually
+    
+    # MEDIA_ROOT is not used when using cloud storage, but keep it for compatibility
+    MEDIA_ROOT = BASE_DIR / "media"
+else:
+    # Fallback to local storage (for development)
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = BASE_DIR / "media"
 
 # Authentication settings
 LOGIN_URL = "/login/"

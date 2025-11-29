@@ -19,7 +19,7 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 - ✅ "My Videos" archive page implemented
 - ⚠️ Progress tracking implemented but unreliable (needs real-time parsing fix)
 - 🔴 **CRITICAL BUG:** Video download link missing on status page when pipeline completes
-- 🔴 **BLOCKER:** Cloud storage not implemented - videos lost on Railway container restarts
+- 🔴 **BLOCKER:** Cloud storage (Cloudflare R2) not implemented - videos lost on Railway container restarts
 
 ---
 
@@ -275,10 +275,10 @@ After fix:
 
 ---
 
-### 2. ⚠️ CRITICAL: Implement Persistent Video Storage with Railway Volumes
+### 2. 🔴 CRITICAL: Implement Cloud Storage with Cloudflare R2
 **Status:** Not implemented  
 **Priority:** 🔴 **CRITICAL - BLOCKING PRODUCTION**  
-**Estimated Effort:** 1-2 hours
+**Estimated Effort:** 3-4 hours
 
 **WHY THIS IS CRITICAL:**
 - **Current Problem:** Videos are saved to local filesystem (`MEDIA_ROOT = BASE_DIR / "media"`)
@@ -290,187 +290,584 @@ After fix:
 - **Impact:** Users generate videos → videos disappear after any restart → **unusable in production**
 - **This must be fixed before deploying to production!**
 
-**Solution: Railway Volumes (Easiest Solution)**
-
-Railway Volumes provide persistent storage that survives container restarts. This is the simplest solution that requires no external services or code changes to the pipeline.
+**Why Cloudflare R2:**
+- ✅ **No egress fees** - Free downloads (perfect for video hosting)
+- ✅ **S3-compatible API** - Works with `django-storages` out of the box
+- ✅ **Free tier:** 10 GB storage, 1M operations/month
+- ✅ **Low cost:** $0.015/GB/month storage
+- ✅ **Fast global CDN** - Videos load quickly worldwide
+- ✅ **Simple setup** - Minimal code changes required
 
 ---
 
 ## Step-by-Step Implementation Guide
 
-### Step 1: Create Railway Volume in Dashboard
+### Step 1: Set Up Cloudflare R2 Account and Bucket
 
-1. **Go to Railway Dashboard:**
-   - Navigate to your Hidden Hill project
-   - Click on your web service (the Django app service)
+1. **Create Cloudflare Account:**
+   - Go to https://dash.cloudflare.com/sign-up
+   - Sign up for a free account (or log in if you have one)
 
-2. **Add Volume:**
-   - In the service settings, find the "Volumes" section
-   - Click "Add Volume" or "New Volume"
-   - Name it: `media-storage` (or any descriptive name)
-   - Set the size (start with 10GB, can increase later)
-   - Click "Create"
+2. **Enable R2:**
+   - In Cloudflare dashboard, go to **R2** (in left sidebar)
+   - Click **"Create bucket"**
+   - Name it: `hidden-hill-videos` (or your preferred name)
+   - Choose a location (closest to your users)
+   - Click **"Create bucket"**
 
-3. **Mount the Volume:**
-   - After creating the volume, you'll see a "Mount Path" field
-   - Set the mount path to: `/app/media`
-   - This is where Railway will mount the persistent volume in your container
-   - Save the configuration
+3. **Create API Token:**
+   - Go to **R2** → **Manage R2 API Tokens**
+   - Click **"Create API token"**
+   - Name it: `hidden-hill-storage`
+   - Permissions: **Object Read & Write**
+   - Bucket: Select your bucket (`hidden-hill-videos`)
+   - Click **"Create API token"**
+   - **IMPORTANT:** Copy the **Access Key ID** and **Secret Access Key** - you'll need these!
 
-**Important:** The mount path `/app/media` must match where your Django app expects media files. We'll verify this in the next step.
+4. **Get Your Account ID:**
+   - In Cloudflare dashboard, go to **R2** → **Overview**
+   - Your **Account ID** is shown at the top
+   - Note this down - you'll need it for the endpoint URL
+
+5. **Get Endpoint URL:**
+   - Format: `https://<account-id>.r2.cloudflarestorage.com`
+   - Example: `https://abc123def456.r2.cloudflarestorage.com`
+   - Replace `<account-id>` with your actual Account ID
 
 ---
 
-### Step 2: Verify MEDIA_ROOT Path
+### Step 2: Install Required Dependencies
 
-**File to check:** `config/settings.py`
+**File:** `requirements.txt`
 
-**Current setting (around line 148-149):**
-```python
-MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+**Add these lines:**
+```
+django-storages[boto3]==1.14.2
+boto3==1.34.0
 ```
 
-**What to verify:**
-- `BASE_DIR` is the project root directory (typically `/app` in Railway containers)
-- So `MEDIA_ROOT` resolves to `/app/media`
-- This matches the volume mount path from Step 1 ✅
-
-**If MEDIA_ROOT is different:**
-- Either change `MEDIA_ROOT` to match the volume mount path
-- Or change the volume mount path to match `MEDIA_ROOT`
-- They must be the same for this to work
-
-**No code changes needed if `MEDIA_ROOT = BASE_DIR / "media"` and volume is mounted at `/app/media`** ✅
+**Then run:**
+```bash
+pip install django-storages[boto3] boto3
+```
 
 ---
 
-### Step 3: Verify Pipeline Code Uses MEDIA_ROOT
+### Step 3: Update Django Settings
 
-**Files to check:**
-- `pipeline/main.py` - Should use `output_dir` parameter
-- `web/tasks.py` - Should pass `MEDIA_ROOT / paper_id` as output directory
-- `web/views.py` - Should use `settings.MEDIA_ROOT` for file paths
+**File:** `config/settings.py`
 
-**Current implementation check:**
+**Find the media files section (around line 147-152) and replace it with:**
 
-1. **Check `web/tasks.py` (around line 460):**
-   ```python
-   output_dir = Path(settings.MEDIA_ROOT) / pmid
-   ```
-   ✅ This is correct - it uses `MEDIA_ROOT` which will now point to the mounted volume
+```python
+# Media files for generated outputs (videos, audio, metadata)
+# Cloud Storage Configuration (Cloudflare R2)
+USE_CLOUD_STORAGE = os.getenv("USE_CLOUD_STORAGE", "False") == "True"
 
-2. **Check `web/views.py` (around line 647):**
-   ```python
-   output_dir = Path(settings.MEDIA_ROOT) / pmid
-   ```
-   ✅ This is correct - uses `MEDIA_ROOT`
+if USE_CLOUD_STORAGE:
+    # Cloudflare R2 (S3-compatible)
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")  # R2 endpoint
+    AWS_S3_REGION_NAME = "auto"  # R2 uses "auto"
+    
+    # Storage settings
+    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+    
+    # Security & performance
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = "public-read"  # Videos are public (or use "private" for signed URLs)
+    AWS_S3_OBJECT_PARAMETERS = {
+        "CacheControl": "max-age=86400",  # 1 day cache
+    }
+    
+    # Media files will be stored in R2
+    # MEDIA_URL will be automatically set to R2 URL
+    MEDIA_URL = f"https://{AWS_STORAGE_BUCKET_NAME}.r2.cloudflarestorage.com/"
+else:
+    # Fallback to local storage (for development)
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = BASE_DIR / "media"
+```
 
-3. **Check `pipeline/main.py`:**
-   - The pipeline receives `output_dir` as a parameter
-   - It writes files directly to that directory
-   - Since `output_dir` comes from `MEDIA_ROOT`, files will go to the volume ✅
-
-**No code changes needed** - the existing code already uses `MEDIA_ROOT` correctly!
+**Important Notes:**
+- The `USE_CLOUD_STORAGE` flag allows you to toggle between local and cloud storage
+- In development, set `USE_CLOUD_STORAGE=False` (or don't set it) to use local storage
+- In production (Railway), set `USE_CLOUD_STORAGE=True` to use R2
 
 ---
 
-### Step 4: Deploy and Test
+### Step 4: Update Model to Use FileField
 
-1. **Deploy to Railway:**
-   - Push your code (if you made any changes)
-   - Railway will automatically redeploy
-   - The volume will be mounted at `/app/media`
+**File:** `web/models.py`
 
-2. **Test Video Generation:**
-   - Go to your Railway app URL
+**Find the `VideoGenerationJob` model and update the `final_video_path` field:**
+
+**Current code (around line 23):**
+```python
+final_video_path = models.CharField(max_length=500, blank=True)
+```
+
+**Replace with:**
+```python
+from django.core.files.storage import default_storage
+
+class VideoGenerationJob(models.Model):
+    # ... existing fields ...
+    
+    # Store video in cloud storage (R2) or local filesystem
+    final_video = models.FileField(
+        upload_to='videos/%Y/%m/%d/',  # Organize by date: videos/2025/01/28/
+        blank=True,
+        null=True,
+        storage=default_storage,  # Will use R2 if USE_CLOUD_STORAGE=True, else local
+    )
+    
+    # Keep final_video_path for backward compatibility during migration
+    # This will store the storage path (e.g., "videos/2025/01/28/final_video.mp4")
+    final_video_path = models.CharField(max_length=500, blank=True)
+```
+
+**Why both fields?**
+- `final_video` (FileField) - Django's proper way to handle files, works with cloud storage
+- `final_video_path` (CharField) - Keep for backward compatibility, stores the storage path
+
+---
+
+### Step 5: Update Celery Task to Upload to Cloud Storage
+
+**File:** `web/tasks.py`
+
+**Find the completion logic in `generate_video_task()` (around line 518-535) and update it:**
+
+**Current code:**
+```python
+final_video = output_path / "final_video.mp4"
+
+if return_code == 0 and final_video.exists():
+    task_result["status"] = "completed"
+    logger.info(f"Video generation completed successfully for {pmid}")
+    
+    # Update job record
+    try:
+        job.final_video_path = str(final_video)
+        job.completed_at = timezone.now()
+        job.save(update_fields=['status', 'progress_percent', 'current_step', 'final_video_path', 'completed_at', 'updated_at'])
+    except Exception as e:
+        logger.warning(f"Failed to update job record on completion: {e}")
+```
+
+**Replace with:**
+```python
+from django.core.files import File
+from django.core.files.storage import default_storage
+
+final_video = output_path / "final_video.mp4"
+
+if return_code == 0 and final_video.exists():
+    task_result["status"] = "completed"
+    logger.info(f"Video generation completed successfully for {pmid}")
+    
+    # Upload to cloud storage (R2) or save locally
+    try:
+        # Generate unique filename with date organization
+        from datetime import datetime
+        date_path = datetime.now().strftime('%Y/%m/%d')
+        video_filename = f"{pmid}/final_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        
+        # Open the local file and upload to cloud storage
+        with open(final_video, 'rb') as f:
+            django_file = File(f, name=video_filename)
+            job.final_video.save(video_filename, django_file, save=False)
+            job.final_video_path = job.final_video.name  # Store the storage path
+            job.status = 'completed'
+            job.completed_at = timezone.now()
+            job.save(update_fields=['final_video', 'final_video_path', 'status', 'progress_percent', 'current_step', 'completed_at', 'updated_at'])
+        
+        logger.info(f"Video uploaded to cloud storage: {job.final_video.name}")
+        
+    except Exception as e:
+        logger.error(f"Failed to upload video to cloud storage: {e}", exc_info=True)
+        # Fallback: keep local path if cloud upload fails
+        try:
+            job.final_video_path = str(final_video)
+            job.status = 'completed'
+            job.completed_at = timezone.now()
+            job.save(update_fields=['status', 'progress_percent', 'current_step', 'final_video_path', 'completed_at', 'updated_at'])
+            logger.warning(f"Saved local path as fallback: {job.final_video_path}")
+        except Exception as e2:
+            logger.error(f"Failed to update job record on completion: {e2}", exc_info=True)
+```
+
+---
+
+### Step 6: Update Views to Serve from Cloud Storage
+
+**File:** `web/views.py`
+
+**Find the `serve_video()` function (around line 1409) and update it:**
+
+**Current code:**
+```python
+def serve_video(request, pmid: str):
+    """Serve video file directly with proper headers."""
+    output_dir = Path(settings.MEDIA_ROOT) / pmid
+    final_video = output_dir / "final_video.mp4"
+    
+    if not final_video.exists():
+        return HttpResponse("Video not found", status=404)
+    
+    try:
+        with open(final_video, 'rb') as f:
+            response = HttpResponse(f.read(), content_type='video/mp4')
+            response['Content-Disposition'] = f'inline; filename="final_video.mp4"'
+            response['Content-Length'] = final_video.stat().st_size
+            return response
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error serving video: {e}", exc_info=True)
+        return HttpResponse("Error serving video", status=500)
+```
+
+**Replace with:**
+```python
+from django.core.files.storage import default_storage
+from django.http import FileResponse, Http404
+
+def serve_video(request, pmid: str):
+    """Serve video file from cloud storage (R2) or local filesystem."""
+    try:
+        # Try to get from database first (cloud storage)
+        from web.models import VideoGenerationJob
+        
+        # Get job record
+        if request.user.is_authenticated:
+            job = VideoGenerationJob.objects.filter(
+                paper_id=pmid, 
+                user=request.user
+            ).first()
+        else:
+            job = VideoGenerationJob.objects.filter(paper_id=pmid).first()
+        
+        # If job has final_video FileField, serve from cloud storage
+        if job and job.final_video:
+            try:
+                return FileResponse(
+                    job.final_video.open('rb'),
+                    content_type='video/mp4',
+                    filename='final_video.mp4'
+                )
+            except Exception as e:
+                logger.error(f"Error opening cloud storage file: {e}", exc_info=True)
+        
+        # Fallback: check local filesystem (for development or migration period)
+        if settings.USE_CLOUD_STORAGE:
+            # In production with cloud storage, if file not in cloud, it doesn't exist
+            raise Http404("Video not found in cloud storage")
+        else:
+            # Local development fallback
+            output_dir = Path(settings.MEDIA_ROOT) / pmid
+            final_video = output_dir / "final_video.mp4"
+            
+            if final_video.exists():
+                return FileResponse(
+                    open(final_video, 'rb'),
+                    content_type='video/mp4',
+                    filename='final_video.mp4'
+                )
+        
+        raise Http404("Video not found")
+        
+    except Http404:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving video: {e}", exc_info=True)
+        return HttpResponse("Error serving video", status=500)
+```
+
+---
+
+### Step 7: Update Other Views That Check File Existence
+
+**File:** `web/views.py`
+
+**Update `pipeline_status()` and other functions that check `final_video.exists()`:**
+
+**Find all instances of:**
+```python
+final_video = output_dir / "final_video.mp4"
+if final_video.exists():
+```
+
+**Replace with:**
+```python
+# Check if video exists in cloud storage or local filesystem
+final_video_exists = False
+if settings.USE_CLOUD_STORAGE:
+    # Check database for cloud storage
+    try:
+        from web.models import VideoGenerationJob
+        job = VideoGenerationJob.objects.filter(paper_id=pmid).first()
+        if job and job.final_video:
+            final_video_exists = True
+    except Exception:
+        pass
+else:
+    # Check local filesystem
+    final_video = output_dir / "final_video.mp4"
+    final_video_exists = final_video.exists()
+```
+
+**Apply this pattern to:**
+- `pipeline_status()` function
+- `pipeline_result()` function
+- `my_videos()` function
+- Any other functions that check for video file existence
+
+---
+
+### Step 8: Set Railway Environment Variables
+
+**In Railway Dashboard:**
+
+1. Go to your project → **Variables** tab
+2. Add these environment variables:
+
+```
+USE_CLOUD_STORAGE=True
+AWS_ACCESS_KEY_ID=your_r2_access_key_id_here
+AWS_SECRET_ACCESS_KEY=your_r2_secret_access_key_here
+AWS_STORAGE_BUCKET_NAME=hidden-hill-videos
+AWS_S3_ENDPOINT_URL=https://<your-account-id>.r2.cloudflarestorage.com
+```
+
+**Important:**
+- Replace `<your-account-id>` with your actual Cloudflare Account ID
+- Replace `hidden-hill-videos` with your actual bucket name
+- Keep these values secret - never commit them to git!
+
+---
+
+### Step 9: Create and Run Database Migration
+
+**Run these commands:**
+
+```bash
+# Create migration for model changes
+python manage.py makemigrations
+
+# Review the migration (should add final_video FileField)
+# Then apply it
+python manage.py migrate
+```
+
+**Migration will:**
+- Add `final_video` FileField to `VideoGenerationJob` model
+- Keep `final_video_path` for backward compatibility
+
+---
+
+### Step 10: Clean Up Railway Volume Code (IMPORTANT!)
+
+**Delete all Railway volume-related code:**
+
+1. **Delete from `web/views.py`:**
+   - Remove `debug_media_path()` function (entire function, around line 231-315)
+   - Remove `test_volume_write()` function (entire function, around line 339-545)
+   - Remove import: `test_volume_write_task` from line 22
+
+2. **Delete from `web/tasks.py`:**
+   - Remove `test_volume_write_task()` function (entire function, around line 738-797)
+
+3. **Delete from `web/urls.py`:**
+   - Remove: `debug_media_path, test_volume_write` from imports (line 4)
+   - Remove: `path("debug-media/", debug_media_path, name="debug_media"),` (line 12)
+   - Remove: `path("test-volume-write/", test_volume_write, name="test_volume_write"),` (line 13)
+
+4. **Delete documentation file:**
+   - Delete: `docs/RAILWAY_VOLUMES_SETUP.md` (if it exists)
+
+5. **Update `config/settings.py`:**
+   - Remove comments about Railway volumes (around line 149-151)
+   - Keep the media configuration clean
+
+**After cleanup, verify:**
+- No references to "railway", "volume", "test_volume" in code
+- All imports are correct
+- URLs file doesn't have broken routes
+
+---
+
+## Testing Instructions
+
+### Test 1: Local Development (Cloud Storage Disabled)
+
+1. **Set environment:**
+   ```bash
+   # In .env file or environment
+   USE_CLOUD_STORAGE=False
+   ```
+
+2. **Generate a video:**
+   - Start Django server: `python manage.py runserver`
    - Log in and generate a video
-   - Wait for it to complete
-   - Note the paper ID (e.g., `PMC10979640`)
+   - Wait for completion
 
-3. **Verify File Location:**
-   - The video should be at: `/app/media/<paper_id>/final_video.mp4`
-   - This path is now on the persistent volume
+3. **Verify:**
+   - Video should be saved to `media/<pmid>/final_video.mp4` (local)
+   - Video should be accessible via `/video/<pmid>/`
+   - Database should have `final_video_path` set
 
-4. **Test Persistence:**
-   - **Option A (Recommended):** In Railway dashboard, restart the service manually
-   - **Option B:** Trigger a redeploy
-   - After restart, check if the video is still accessible
-   - Go to `/result/<paper_id>/` - video should still play ✅
+### Test 2: Local Development (Cloud Storage Enabled)
 
-5. **Verify in Database:**
-   - Check `VideoGenerationJob` records in Django admin or database
-   - `final_video_path` should show the path (e.g., `media/PMC10979640/final_video.mp4`)
-   - The file should exist at that path even after restart
+1. **Set environment:**
+   ```bash
+   USE_CLOUD_STORAGE=True
+   AWS_ACCESS_KEY_ID=your_key
+   AWS_SECRET_ACCESS_KEY=your_secret
+   AWS_STORAGE_BUCKET_NAME=your-bucket
+   AWS_S3_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
+   ```
 
----
+2. **Generate a video:**
+   - Start Django server
+   - Log in and generate a video
+   - Wait for completion
 
-### Step 5: Verify Volume Mounting (Optional Debugging)
+3. **Verify:**
+   - Check Cloudflare R2 dashboard - video should be in bucket
+   - Video should be accessible via `/video/<pmid>/`
+   - Database should have `final_video` FileField populated
+   - `final_video_path` should contain the storage path
 
-If videos are still being lost, verify the volume is mounted:
+### Test 3: Production (Railway with R2)
 
-1. **Check Railway Logs:**
-   - Look for volume mount messages during container startup
-   - Should see something like: "Volume mounted at /app/media"
+1. **Set Railway environment variables** (Step 8)
 
-2. **Add Debug Endpoint (Temporary):**
-   - Add to `web/views.py`:
+2. **Deploy to Railway:**
+   - Push code to git
+   - Railway will auto-deploy
+
+3. **Generate a video:**
+   - Go to Railway app URL
+   - Log in and generate a video
+   - Wait for completion
+
+4. **Verify:**
+   - Check Cloudflare R2 dashboard - video should be in bucket
+   - Video should be accessible via `/video/<pmid>/`
+   - Restart Railway service - video should still be accessible ✅
+   - Database should have `final_video` FileField populated
+
+### Test 4: Video Recovery (Optional)
+
+If you have videos on the Celery volume that need to be recovered:
+
+1. **Create recovery task** (temporary):
    ```python
-   def debug_media_path(request):
-       import os
-       from pathlib import Path
-       from django.conf import settings
+   @shared_task
+   def recover_videos_to_r2(pmid: str = None):
+       """Recover videos from local filesystem to R2."""
+       from django.core.files import File
+       from web.models import VideoGenerationJob
        
        media_root = Path(settings.MEDIA_ROOT)
-       info = {
-           "MEDIA_ROOT": str(media_root),
-           "MEDIA_ROOT_exists": media_root.exists(),
-           "MEDIA_ROOT_is_dir": media_root.is_dir(),
-           "MEDIA_ROOT_writable": os.access(media_root, os.W_OK),
-           "files_in_media": list(media_root.iterdir())[:10] if media_root.exists() else [],
-       }
-       return JsonResponse(info)
+       if pmid:
+           video_dirs = [media_root / pmid] if (media_root / pmid).exists() else []
+       else:
+           video_dirs = [d for d in media_root.iterdir() 
+                        if d.is_dir() and (d / "final_video.mp4").exists()]
+       
+       for video_dir in video_dirs:
+           final_video = video_dir / "final_video.mp4"
+           if not final_video.exists():
+               continue
+           
+           try:
+               job = VideoGenerationJob.objects.filter(paper_id=video_dir.name).first()
+               if job and not job.final_video:
+                   video_filename = f"{video_dir.name}/final_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                   with open(final_video, 'rb') as f:
+                       django_file = File(f, name=video_filename)
+                       job.final_video.save(video_filename, django_file, save=False)
+                       job.final_video_path = job.final_video.name
+                       job.save()
+           except Exception as e:
+               logger.error(f"Failed to recover {video_dir.name}: {e}")
    ```
-   - Add route: `path("debug-media/", debug_media_path, name="debug_media")`
-   - Visit `/debug-media/` to see if volume is mounted correctly
 
-3. **Check File System:**
-   - `MEDIA_ROOT_exists` should be `True`
-   - `MEDIA_ROOT_writable` should be `True`
-   - If either is `False`, the volume isn't mounted correctly
+2. **Run recovery:**
+   ```python
+   from web.tasks import recover_videos_to_r2
+   recover_videos_to_r2.delay()  # Recover all videos
+   # Or: recover_videos_to_r2.delay("PMC10979640")  # Recover specific video
+   ```
+
+---
+
+## Testing Checklist
+
+- [ ] Installed `django-storages[boto3]` and `boto3`
+- [ ] Created Cloudflare R2 bucket
+- [ ] Created R2 API token
+- [ ] Updated `config/settings.py` with R2 configuration
+- [ ] Updated `web/models.py` to add `final_video` FileField
+- [ ] Updated `web/tasks.py` to upload videos to R2
+- [ ] Updated `web/views.py` to serve videos from R2
+- [ ] Created and ran database migration
+- [ ] Set Railway environment variables
+- [ ] Deleted all Railway volume code (debug endpoints, test functions)
+- [ ] Tested locally with `USE_CLOUD_STORAGE=False` (local storage)
+- [ ] Tested locally with `USE_CLOUD_STORAGE=True` (R2 storage)
+- [ ] Tested on Railway production
+- [ ] Verified video persists after Railway service restart
+- [ ] Verified video is accessible via `/video/<pmid>/`
+- [ ] Verified "My Videos" page shows videos correctly
+- [ ] Checked Cloudflare R2 dashboard - videos are in bucket
+- [ ] Verified database has `final_video` FileField populated
 
 ---
 
 ## Troubleshooting
 
-### Problem: Videos still lost after restart
+### Problem: "No module named 'storages'"
 
-**Possible causes:**
-1. Volume not mounted correctly
-   - **Fix:** Check Railway dashboard → Volumes → Verify mount path is `/app/media`
-   - Verify service is using the volume (should show in service settings)
+**Fix:**
+```bash
+pip install django-storages[boto3] boto3
+# Add to requirements.txt and redeploy
+```
 
-2. MEDIA_ROOT path mismatch
-   - **Fix:** Ensure `MEDIA_ROOT = BASE_DIR / "media"` and volume is at `/app/media`
-   - Check that `BASE_DIR` is `/app` in Railway (it should be)
+### Problem: "Access Denied" or "Invalid credentials"
 
-3. Files being written to wrong location
-   - **Fix:** Add debug endpoint (Step 5) to verify where files are actually being written
-   - Check `web/tasks.py` and `web/views.py` - ensure they use `settings.MEDIA_ROOT`
+**Fix:**
+- Verify `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are correct
+- Check that API token has "Object Read & Write" permissions
+- Verify bucket name matches `AWS_STORAGE_BUCKET_NAME`
 
-### Problem: Permission errors
+### Problem: "Endpoint URL incorrect"
 
-**If you see permission errors:**
-- Railway volumes should have correct permissions automatically
-- If not, you may need to set volume permissions in Railway dashboard
-- Or add a startup script to set permissions (rarely needed)
+**Fix:**
+- Verify `AWS_S3_ENDPOINT_URL` format: `https://<account-id>.r2.cloudflarestorage.com`
+- Replace `<account-id>` with your actual Cloudflare Account ID
+- No trailing slash!
 
-### Problem: Volume not showing in dashboard
+### Problem: Videos not uploading to R2
 
-**If you can't find Volumes section:**
-- Make sure you're on the correct service (web service, not database)
-- Some Railway plans may have volume limits - check your plan
-- Try creating volume from project level instead of service level
+**Check:**
+1. Is `USE_CLOUD_STORAGE=True` set?
+2. Are all environment variables set correctly?
+3. Check Celery worker logs for upload errors
+4. Verify bucket name and permissions
+
+### Problem: Videos not accessible after upload
+
+**Check:**
+1. Is `AWS_DEFAULT_ACL = "public-read"` set? (for public videos)
+2. Or use signed URLs if videos should be private
+3. Check that `serve_video()` function is updated correctly
 
 ---
 
@@ -478,63 +875,64 @@ If videos are still being lost, verify the volume is mounted:
 
 After completing these steps:
 
-✅ Videos are saved to `/app/media/<paper_id>/final_video.mp4`  
-✅ Files persist across container restarts  
-✅ Files persist across deployments  
-✅ Users can access videos even after service restarts  
-✅ Database records match actual file locations  
+✅ Videos are uploaded to Cloudflare R2 automatically  
+✅ Videos persist across container restarts (stored in cloud)  
+✅ Videos persist across deployments  
+✅ Videos are accessible via `/video/<pmid>/` endpoint  
+✅ Database records have `final_video` FileField populated  
 ✅ "My Videos" page shows accessible videos  
+✅ No Railway volume code remaining  
+✅ Works in both development (local) and production (R2)  
 
 ---
 
-## Files That May Need Changes
+## Cost Estimate
 
-**Most likely: NONE** - The existing code should work as-is if:
-- `MEDIA_ROOT = BASE_DIR / "media"` in `config/settings.py`
-- Volume is mounted at `/app/media` in Railway
-- Pipeline code uses `output_dir` parameter (which it does)
+**For 100 videos (~5 GB total):**
+- Storage: ~$0.075/month
+- Operations: Free (within free tier)
+- Egress: **FREE** (no download fees!)
+- **Total: ~$0.075/month** 🎉
 
-**Only modify if:**
-- You need to change the media path
-- You want to add volume-specific configuration
-- You encounter permission issues (rare)
+**For 1000 videos (~50 GB total):**
+- Storage: ~$0.75/month
+- Operations: Free (within free tier)
+- Egress: **FREE**
+- **Total: ~$0.75/month** 🎉
 
 ---
 
-## Testing Checklist
+## Files Modified
 
-- [ ] Volume created in Railway dashboard
-- [ ] Volume mounted at `/app/media`
-- [ ] `MEDIA_ROOT` in settings matches mount path
-- [ ] Generated a test video
-- [ ] Video file exists at expected path
-- [ ] Restarted Railway service
-- [ ] Video still accessible after restart
-- [ ] Database record shows correct path
-- [ ] User can view video in "My Videos" page
-- [ ] Video playback works correctly
+1. **`requirements.txt`** - Add `django-storages[boto3]` and `boto3`
+2. **`config/settings.py`** - Add R2 configuration
+3. **`web/models.py`** - Add `final_video` FileField
+4. **`web/tasks.py`** - Update to upload to R2
+5. **`web/views.py`** - Update to serve from R2, remove volume test code
+6. **`web/urls.py`** - Remove volume test routes
+7. **Database migration** - Add `final_video` field
+
+**Files Deleted:**
+- `docs/RAILWAY_VOLUMES_SETUP.md` (if exists)
 
 ---
 
 ## Next Steps After Implementation
 
-Once Railway Volumes are working:
-
-1. **Monitor storage usage:**
-   - Check volume size in Railway dashboard
-   - Plan for cleanup of old videos if needed (future feature)
+1. **Monitor R2 usage:**
+   - Check Cloudflare dashboard for storage usage
+   - Monitor API operations
+   - Set up billing alerts if needed
 
 2. **Consider cleanup strategy:**
-   - Videos will accumulate on the volume
-   - May want to implement video deletion feature later
-   - Or set up automatic cleanup of videos older than X days
+   - Videos will accumulate in R2
+   - May want to implement video deletion feature
+   - Or set up automatic cleanup of old videos
 
-3. **Optional: Migrate to S3 later:**
-   - Railway Volumes work great for now
-   - Can migrate to AWS S3 later if you need:
-     - Multi-region support
-     - CDN integration
-     - More flexible storage options
+3. **Optional: Custom domain:**
+   - R2 supports custom domains
+   - Can set up `videos.yourdomain.com` for video URLs
+   - Requires Cloudflare DNS setup
 
 ---
 
@@ -1378,7 +1776,7 @@ def delete_video(request, paper_id: str):
 - **Current Branch:** `main`
 - **Deployment:** Railway (configured, needs production setup)
 - **Database:** SQLite locally, PostgreSQL on Railway
-- **Storage:** ⚠️ **Local filesystem - CRITICAL: Videos are lost on Railway container restarts. Cloud storage must be implemented before production deployment.**
+- **Storage:** ⚠️ **Local filesystem - CRITICAL: Videos are lost on Railway container restarts. Cloudflare R2 cloud storage must be implemented before production deployment.**
 
 ---
 

@@ -521,19 +521,48 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
             task_result["status"] = "completed"
             logger.info(f"Video generation completed successfully for {pmid}")
             
-            # Update database job record
+            # Upload to cloud storage (R2) or save locally
             if job:
                 try:
+                    from django.core.files import File
+                    from django.core.files.storage import default_storage
+                    from django.conf import settings
+                    from datetime import datetime
+                    
                     # Refresh job to get latest progress
                     job.refresh_from_db()
+                    
+                    # Generate unique filename with date organization
+                    date_path = datetime.now().strftime('%Y/%m/%d')
+                    video_filename = f"videos/{date_path}/{pmid}_final_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                    
+                    # Upload to cloud storage (R2) or save locally
+                    if settings.USE_CLOUD_STORAGE:
+                        # Open the local file and upload to cloud storage
+                        try:
+                            with open(final_video, 'rb') as f:
+                                django_file = File(f, name=video_filename)
+                                job.final_video.save(video_filename, django_file, save=False)
+                                job.final_video_path = job.final_video.name  # Store the storage path
+                                logger.info(f"Video uploaded to cloud storage: {job.final_video.name}")
+                        except Exception as upload_error:
+                            logger.error(f"Failed to upload video to cloud storage: {upload_error}", exc_info=True)
+                            # Fallback: keep local path if cloud upload fails
+                            job.final_video_path = str(final_video)
+                            logger.warning(f"Saved local path as fallback: {job.final_video_path}")
+                    else:
+                        # Local storage - just save the path
+                        job.final_video_path = str(final_video)
+                    
+                    # Update job status
                     job.status = 'completed'
                     job.progress_percent = 100
                     job.current_step = None
-                    job.final_video_path = str(final_video)
                     job.completed_at = timezone.now()
-                    job.save(update_fields=['status', 'progress_percent', 'current_step', 'final_video_path', 'completed_at', 'updated_at'])
+                    job.save(update_fields=['final_video', 'final_video_path', 'status', 'progress_percent', 'current_step', 'completed_at', 'updated_at'])
+                    
                 except Exception as e:
-                    logger.warning(f"Failed to update job record on completion: {e}")
+                    logger.error(f"Failed to update job record on completion: {e}", exc_info=True)
         else:
             # Pipeline failed - try to extract error from log
             error_message = _extract_error_from_log(log_path)

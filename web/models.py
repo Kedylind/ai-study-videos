@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.files.storage import default_storage
 
 
 class VideoGenerationJob(models.Model):
@@ -20,6 +21,17 @@ class VideoGenerationJob(models.Model):
     error_message = models.TextField(blank=True)
     error_type = models.CharField(max_length=50, blank=True)
     task_id = models.CharField(max_length=255, unique=True)  # Celery task ID
+    
+    # Store video in cloud storage (R2) or local filesystem
+    final_video = models.FileField(
+        upload_to='videos/%Y/%m/%d/',  # Organize by date: videos/2025/01/28/
+        blank=True,
+        null=True,
+        storage=default_storage,  # Will use R2 if USE_CLOUD_STORAGE=True, else local
+    )
+    
+    # Keep final_video_path for backward compatibility during migration
+    # This will store the storage path (e.g., "videos/2025/01/28/final_video.mp4")
     final_video_path = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

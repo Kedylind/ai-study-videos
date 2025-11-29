@@ -19,7 +19,7 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
-from .tasks import generate_video_task, get_task_status, update_job_progress_from_files, test_volume_write_task
+from .tasks import generate_video_task, get_task_status, update_job_progress_from_files
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -45,6 +45,50 @@ def _get_user_friendly_error(error_type: str, error_detail: str = "") -> str:
     }
     
     return error_messages.get(error_type, error_messages["unknown_error"])
+
+
+def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
+    """
+    Check if video exists in cloud storage (R2) or local filesystem.
+    
+    Args:
+        pmid: Paper ID
+        user: Optional user object for authenticated checks
+        
+    Returns:
+        Tuple of (exists: bool, video_url: Optional[str])
+    """
+    from web.models import VideoGenerationJob
+    
+    # Check database for cloud storage
+    try:
+        if user and user.is_authenticated:
+            job = VideoGenerationJob.objects.filter(paper_id=pmid, user=user).order_by('-created_at').first()
+        else:
+            job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+        
+        if job and job.final_video:
+            # Video exists in cloud storage
+            try:
+                # Check if file actually exists in storage
+                if job.final_video.storage.exists(job.final_video.name):
+                    video_url = reverse("serve_video", args=[pmid])
+                    return True, video_url
+            except Exception:
+                pass
+    
+    except Exception:
+        pass
+    
+    # Fallback: check local filesystem (for development or migration period)
+    if not settings.USE_CLOUD_STORAGE:
+        output_dir = Path(settings.MEDIA_ROOT) / pmid
+        final_video = output_dir / "final_video.mp4"
+        if final_video.exists():
+            video_url = reverse("serve_video", args=[pmid])
+            return True, video_url
+    
+    return False, None
 
 
 def _validate_access_code(access_code: str | None) -> bool:
@@ -226,260 +270,6 @@ def static_debug(request):
         return response
     except Exception as e:
         return JsonResponse({"error": str(e), "type": type(e).__name__}, status=500)
-
-
-def debug_media_path(request):
-    """
-    Debug endpoint to verify Railway volume mounting for persistent storage.
-    
-    This endpoint checks if MEDIA_ROOT exists, is writable, and shows information
-    about the media directory. Use this to verify that Railway volumes are
-    mounted correctly.
-    
-    Access: /debug-media/
-    """
-    import os
-    from pathlib import Path
-    from django.conf import settings
-    
-    try:
-        media_root = Path(settings.MEDIA_ROOT)
-        base_dir = Path(settings.BASE_DIR)
-        
-        # Get basic info
-        info = {
-            "BASE_DIR": str(base_dir),
-            "MEDIA_ROOT": str(media_root),
-            "MEDIA_URL": settings.MEDIA_URL,
-            "MEDIA_ROOT_exists": media_root.exists(),
-            "MEDIA_ROOT_is_dir": media_root.is_dir() if media_root.exists() else False,
-            "MEDIA_ROOT_writable": os.access(media_root, os.W_OK) if media_root.exists() else False,
-            "MEDIA_ROOT_readable": os.access(media_root, os.R_OK) if media_root.exists() else False,
-        }
-        
-        # Check if MEDIA_ROOT is expected path for Railway
-        expected_railway_path = "/app/media"
-        info["expected_railway_path"] = expected_railway_path
-        info["matches_railway_path"] = str(media_root) == expected_railway_path
-        
-        # Try to list files in media directory
-        if media_root.exists():
-            try:
-                files = list(media_root.iterdir())
-                info["files_count"] = len(files)
-                info["files_in_media"] = [
-                    {
-                        "name": f.name,
-                        "is_dir": f.is_dir(),
-                        "size": f.stat().st_size if f.is_file() else None,
-                    }
-                    for f in files[:20]  # Limit to first 20 items
-                ]
-                
-                # Check for video directories
-                video_dirs = [f.name for f in files if f.is_dir()]
-                info["video_directories"] = video_dirs[:10]
-                
-            except Exception as e:
-                info["list_files_error"] = str(e)
-        else:
-            info["warning"] = "MEDIA_ROOT directory does not exist. This may indicate the Railway volume is not mounted."
-            # Try to create it (this will fail if volume isn't mounted, which is useful info)
-            try:
-                media_root.mkdir(parents=True, exist_ok=True)
-                info["created_directory"] = True
-                info["created_directory_writable"] = os.access(media_root, os.W_OK)
-            except Exception as e:
-                info["create_directory_error"] = str(e)
-                info["create_directory_error_type"] = type(e).__name__
-        
-        # Check if we can write a test file
-        if media_root.exists() and os.access(media_root, os.W_OK):
-            try:
-                test_file = media_root / ".test_write"
-                test_file.write_text("test")
-                test_file.unlink()
-                info["test_write_successful"] = True
-            except Exception as e:
-                info["test_write_successful"] = False
-                info["test_write_error"] = str(e)
-        
-        # Volume mounting verification
-        info["volume_mounting_status"] = "OK" if (
-            media_root.exists() and 
-            os.access(media_root, os.W_OK) and 
-            os.access(media_root, os.R_OK)
-        ) else "ISSUES DETECTED"
-        
-        if info["volume_mounting_status"] == "ISSUES DETECTED":
-            info["recommendations"] = [
-                "Check Railway dashboard → Volumes → Verify mount path is '/app/media'",
-                "Verify service is using the volume (should show in service settings)",
-                "Check that BASE_DIR resolves to '/app' in Railway",
-                "Ensure MEDIA_ROOT = BASE_DIR / 'media' in settings.py",
-            ]
-        
-        import json
-        response = JsonResponse(info)
-        # Format JSON for readability
-        response.content = json.dumps(info, indent=2)
-        return response
-    except Exception as e:
-        import json
-        error_data = {
-            "error": str(e),
-            "type": type(e).__name__,
-            "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None
-        }
-        response = JsonResponse(error_data, status=500)
-        response.content = json.dumps(error_data, indent=2)
-        return response
-
-
-def test_volume_write(request):
-    """
-    Test endpoint to verify Railway volume is writable.
-    
-    This creates a test file in MEDIA_ROOT to verify the volume is working.
-    This can be called from the Server service to test if it can access the volume.
-    
-    Access: /test-volume-write/
-    
-    Also tests Celery access if ?test_celery=1 is provided.
-    """
-    import os
-    import traceback
-    from pathlib import Path
-    from django.conf import settings
-    from django.utils import timezone
-    
-    result = {
-        "server_test": {},
-        "celery_test": {},
-    }
-    
-    # Test Server (Django) access
-    try:
-        # Ensure MEDIA_ROOT is a Path object
-        media_root_str = str(settings.MEDIA_ROOT)
-        media_root = Path(media_root_str)
-        
-        # Create test directory if needed
-        test_dir = media_root / ".volume_test"
-        test_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Write a test file with timestamp
-        test_file = test_dir / "test_write_server.txt"
-        test_content = f"Volume test - {timezone.now().isoformat()}\nService: Server (Django)\nMEDIA_ROOT: {media_root}"
-        test_file.write_text(test_content)
-        
-        # Verify we can read it back
-        read_back = test_file.read_text()
-        
-        # Get file stats
-        file_stats = test_file.stat()
-        
-        result["server_test"] = {
-            "success": True,
-            "message": "Volume write test successful",
-            "service": "Server (Django)",
-            "MEDIA_ROOT": str(media_root),
-            "MEDIA_ROOT_type": type(settings.MEDIA_ROOT).__name__,
-            "test_file_path": str(test_file),
-            "test_file_exists": test_file.exists(),
-            "test_file_size": file_stats.st_size,
-            "test_file_readable": True,
-            "test_content_matches": read_back == test_content,
-            "timestamp": timezone.now().isoformat(),
-        }
-    except Exception as e:
-        import sys
-        exc_type, exc_value, exc_traceback = sys.exc_info()
-        result["server_test"] = {
-            "success": False,
-            "error": str(e),
-            "type": type(e).__name__,
-            "service": "Server (Django)",
-            "MEDIA_ROOT": str(settings.MEDIA_ROOT) if hasattr(settings, 'MEDIA_ROOT') else "unknown",
-            "MEDIA_ROOT_type": type(settings.MEDIA_ROOT).__name__ if hasattr(settings, 'MEDIA_ROOT') else "unknown",
-            "traceback": ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-            "recommendation": "If this fails, the volume may only be mounted on Celery. You may need to mount it on Server as well.",
-        }
-    
-    # Test Celery access if requested
-    if request.GET.get("test_celery") == "1":
-        try:
-            celery_task = test_volume_write_task.delay()
-            celery_result = celery_task.get(timeout=10)
-            result["celery_test"] = celery_result
-            
-            # CRITICAL: Check if Server can actually SEE the file that Celery wrote
-            # This is the real test - can Server read files from Celery's filesystem?
-            celery_test_file = media_root / ".volume_test" / "test_write_celery.txt"
-            result["cross_service_check"] = {
-                "celery_file_path": str(celery_test_file),
-                "server_can_see_celery_file": celery_test_file.exists(),
-            }
-            if celery_test_file.exists():
-                try:
-                    celery_content = celery_test_file.read_text()
-                    result["cross_service_check"]["server_can_read_celery_file"] = True
-                    result["cross_service_check"]["file_content_preview"] = celery_content[:200]
-                except Exception as e:
-                    result["cross_service_check"]["server_can_read_celery_file"] = False
-                    result["cross_service_check"]["read_error"] = str(e)
-            else:
-                result["cross_service_check"]["server_can_read_celery_file"] = False
-                result["cross_service_check"]["warning"] = "Server cannot see file written by Celery! They are on different filesystems."
-        except Exception as e:
-            result["celery_test"] = {
-                "success": False,
-                "error": str(e),
-                "type": type(e).__name__,
-                "service": "Celery Worker",
-                "recommendation": "Check that Celery worker is running and volume is mounted on Celery service.",
-            }
-    
-    # Overall status - now includes cross-service visibility check
-    try:
-        server_ok = result.get("server_test", {}).get("success", False)
-        celery_test_result = result.get("celery_test", {})
-        celery_ok = celery_test_result.get("success", False) if celery_test_result else None
-        cross_service_ok = result.get("cross_service_check", {}).get("server_can_see_celery_file", None)
-        
-        if celery_ok is None:
-            # Only tested server
-            result["overall_status"] = "OK" if server_ok else "FAILED"
-            result["recommendation"] = "Server can access volume" if server_ok else "Server cannot access volume. Mount volume on Server service in Railway."
-        else:
-            # Tested both - now check cross-service visibility
-            if server_ok and celery_ok and cross_service_ok:
-                result["overall_status"] = "OK"
-                result["recommendation"] = "Both Server and Celery can access the SAME volume. Setup is correct!"
-            elif server_ok and celery_ok and not cross_service_ok:
-                result["overall_status"] = "FAILED"
-                result["recommendation"] = "⚠️ CRITICAL: Server and Celery are on DIFFERENT filesystems! Celery can write, but Server cannot see Celery's files. Mount the same 'celery-volume' on the Server service in Railway."
-            elif not server_ok and celery_ok:
-                result["overall_status"] = "PARTIAL"
-                result["recommendation"] = "Celery can write, but Server cannot read. Mount the same volume on Server service in Railway."
-            elif server_ok and not celery_ok:
-                result["overall_status"] = "PARTIAL"
-                result["recommendation"] = "Server can access, but Celery cannot write. Check Celery volume mount in Railway."
-            else:
-                result["overall_status"] = "FAILED"
-                result["recommendation"] = "Neither service can access the volume. Check volume mount configuration in Railway."
-        
-        status_code = 200 if result.get("overall_status") == "OK" else 500
-    except Exception as e:
-        result["overall_status"] = "ERROR"
-        result["status_calculation_error"] = str(e)
-        result["recommendation"] = "Error calculating overall status. Check individual test results."
-        status_code = 500
-    
-    import json
-    response = JsonResponse(result, status=status_code)
-    response.content = json.dumps(result, indent=2)
-    return response
 
 
 def debug_video_files(request, pmid: str):
@@ -1264,20 +1054,15 @@ def pipeline_status(request, pmid: str):
                     "total_steps": 5,
                 }
     
+    # Check if video exists (cloud storage or local)
+    final_video_exists, final_video_url = _check_video_exists(pmid, request.user)
+    
     # Ensure status is "completed" if video exists and progress is 100%
-    if final_video.exists() and progress.get("progress_percent", 0) >= 100:
+    if final_video_exists and progress.get("progress_percent", 0) >= 100:
         progress["status"] = "completed"
 
     if request.GET.get("_json"):
         # JSON status endpoint - use the new progress tracking
-        # Fix: Always check file existence and use serve_video endpoint
-        final_video_url = None
-        final_video_exists = final_video.exists()
-        
-        if final_video_exists:
-            from django.urls import reverse
-            final_video_url = reverse("serve_video", args=[pmid])
-        
         status = {
             "pmid": pmid,
             "exists": output_dir.exists(),
@@ -1291,30 +1076,11 @@ def pipeline_status(request, pmid: str):
         
         # CRITICAL FIX: If status is completed or progress is 100%, ensure final_video_url is set
         if (status["status"] == "completed" or status["progress_percent"] >= 100):
-            # Double-check file existence - might have been created after initial check
-            if final_video.exists() and not final_video_url:
-                from django.urls import reverse
-                final_video_url = reverse("serve_video", args=[pmid])
+            # Re-check video existence - might have been created after initial check
+            final_video_exists, final_video_url = _check_video_exists(pmid, request.user)
+            if final_video_exists and final_video_url:
                 status["final_video_url"] = final_video_url
                 status["final_video"] = True
-            # Also check database job record if file doesn't exist
-            elif not final_video.exists():
-                try:
-                    from web.models import VideoGenerationJob
-                    if request.user.is_authenticated:
-                        job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
-                    else:
-                        job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
-                    if job and job.status == 'completed' and job.final_video_path:
-                        # Job says completed, try to construct path from job record
-                        final_video_path = Path(job.final_video_path)
-                        if final_video_path.exists():
-                            from django.urls import reverse
-                            final_video_url = reverse("serve_video", args=[pmid])
-                            status["final_video_url"] = final_video_url
-                            status["final_video"] = True
-                except Exception:
-                    pass
         
         # Add error information if available
         if "error" in progress:
@@ -1355,32 +1121,12 @@ def pipeline_status(request, pmid: str):
         error_message = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
 
     # CRITICAL FIX: If progress is 100% or status is completed, check file again
-    final_video_exists = final_video.exists()
+    # Use helper function to check cloud storage or local filesystem
+    final_video_exists, final_video_url = _check_video_exists(pmid, request.user)
+    
     if (progress.get("progress_percent", 0) >= 100 or progress.get("status") == "completed"):
-        # Double-check file existence - might have been created after initial check
-        final_video_exists = final_video.exists()
-        # If still doesn't exist, check if job says it's completed
-        if not final_video_exists:
-            try:
-                from web.models import VideoGenerationJob
-                if request.user.is_authenticated:
-                    job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
-                else:
-                    job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
-                if job and job.status == 'completed' and job.final_video_path:
-                    # Job says completed, try to construct path from job record
-                    final_video_path = Path(job.final_video_path)
-                    if final_video_path.exists():
-                        final_video_exists = True
-            except Exception:
-                pass
-
-    # Use dedicated video endpoint if video exists
-    if final_video_exists:
-        from django.urls import reverse
-        final_video_url = reverse("serve_video", args=[pmid])
-    else:
-        final_video_url = None  # Don't set invalid URL
+        # Re-check video existence - might have been created after initial check
+        final_video_exists, final_video_url = _check_video_exists(pmid, request.user)
     
     context = {
         "pmid": pmid,
@@ -1395,11 +1141,10 @@ def pipeline_status(request, pmid: str):
 
 
 def pipeline_result(request, pmid: str):
-    output_dir = Path(settings.MEDIA_ROOT) / pmid
-    final_video = output_dir / "final_video.mp4"
-    if final_video.exists():
-        # Use dedicated video endpoint
-        video_url = reverse("serve_video", args=[pmid])
+    # Check if video exists (cloud storage or local)
+    final_video_exists, video_url = _check_video_exists(pmid, request.user if hasattr(request, 'user') else None)
+    
+    if final_video_exists and video_url:
         return render(request, "result.html", {"pmid": pmid, "video_url": video_url})
     else:
         return HttpResponseRedirect(reverse("pipeline_status", args=[pmid]))
@@ -1407,23 +1152,58 @@ def pipeline_result(request, pmid: str):
 
 @login_required
 def serve_video(request, pmid: str):
-    """Serve video file directly with proper headers."""
-    output_dir = Path(settings.MEDIA_ROOT) / pmid
-    final_video = output_dir / "final_video.mp4"
-    
-    if not final_video.exists():
-        return HttpResponse("Video not found", status=404)
+    """Serve video file from cloud storage (R2) or local filesystem."""
+    from django.core.files.storage import default_storage
+    from django.http import FileResponse, Http404
+    import logging
+    logger = logging.getLogger(__name__)
     
     try:
-        with open(final_video, 'rb') as f:
-            response = HttpResponse(f.read(), content_type='video/mp4')
-            response['Content-Disposition'] = f'inline; filename="final_video.mp4"'
-            response['Content-Length'] = final_video.stat().st_size
-            return response
+        # Try to get from database first (cloud storage)
+        from web.models import VideoGenerationJob
+        
+        # Get job record
+        if request.user.is_authenticated:
+            job = VideoGenerationJob.objects.filter(
+                paper_id=pmid, 
+                user=request.user
+            ).order_by('-created_at').first()
+        else:
+            job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+        
+        # If job has final_video FileField, serve from cloud storage
+        if job and job.final_video:
+            try:
+                return FileResponse(
+                    job.final_video.open('rb'),
+                    content_type='video/mp4',
+                    filename='final_video.mp4'
+                )
+            except Exception as e:
+                logger.error(f"Error opening cloud storage file: {e}", exc_info=True)
+        
+        # Fallback: check local filesystem (for development or migration period)
+        if settings.USE_CLOUD_STORAGE:
+            # In production with cloud storage, if file not in cloud, it doesn't exist
+            raise Http404("Video not found in cloud storage")
+        else:
+            # Local development fallback
+            output_dir = Path(settings.MEDIA_ROOT) / pmid
+            final_video = output_dir / "final_video.mp4"
+            
+            if final_video.exists():
+                return FileResponse(
+                    open(final_video, 'rb'),
+                    content_type='video/mp4',
+                    filename='final_video.mp4'
+                )
+        
+        raise Http404("Video not found")
+        
+    except Http404:
+        raise
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error serving video for {pmid}: {e}")
+        logger.error(f"Error serving video: {e}", exc_info=True)
         return HttpResponse("Error serving video", status=500)
 
 
@@ -1454,15 +1234,24 @@ def my_videos(request):
                     'has_video': False,
                 }
                 
-                # Check if video file exists
+                # Check if video file exists (cloud storage or local)
                 has_file = False
                 if job.paper_id:
                     try:
-                        video_path = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
-                        if video_path.exists():
-                            has_file = True
+                        # Use helper function to check cloud storage or local filesystem
+                        has_file, video_url = _check_video_exists(job.paper_id, request.user)
+                        if has_file and video_url:
                             video_data['has_video'] = True
-                            video_data['video_url'] = reverse('serve_video', args=[job.paper_id])
+                            video_data['video_url'] = video_url
+                        # Also check if job has final_video FileField (cloud storage)
+                        elif job.final_video:
+                            try:
+                                if job.final_video.storage.exists(job.final_video.name):
+                                    has_file = True
+                                    video_data['has_video'] = True
+                                    video_data['video_url'] = reverse('serve_video', args=[job.paper_id])
+                            except Exception:
+                                pass
                     except Exception as e:
                         logger.warning(f"Error checking video file for job {job.id}: {e}")
                 
