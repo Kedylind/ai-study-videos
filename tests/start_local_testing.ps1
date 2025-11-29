@@ -4,7 +4,8 @@ $ErrorActionPreference = "Continue"
 Write-Host "=== Hidden Hill - Starting Local Testing Environment ===" -ForegroundColor Cyan
 Write-Host ""
 
-$projectRoot = "C:\Users\david\OneDrive\Desktop\Cursor Projects\Hidden-Hill"
+# Get project root (assuming script is in tests/ directory)
+$projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
 # Activate virtual environment

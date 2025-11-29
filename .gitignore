@@ -43,5 +43,6 @@ staticfiles/
 .env.local
 .env.*.local
 
-# Kyle-code temporary test files
+# Temporary test files and generated content
 kyle-code/tmp/
+pipeline/tmp/

@@ -1,7 +1,7 @@
 # PowerShell script to test video generation status updates
-# Usage: .\scripts\test_status.ps1 -PaperId TEST123 -Step generate-script
-#        .\scripts\test_status.ps1 -PaperId TEST123 -Auto
-#        .\scripts\test_status.ps1 -PaperId TEST123 -Auto -Delay 5
+# Usage: .\tests\test_status.ps1 -PaperId TEST123 -Step generate-script
+#        .\tests\test_status.ps1 -PaperId TEST123 -Auto
+#        .\tests\test_status.ps1 -PaperId TEST123 -Auto -Delay 5
 
 param(
     [Parameter(Mandatory=$true)]

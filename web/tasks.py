@@ -526,7 +526,6 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                 try:
                     from django.core.files import File
                     from django.core.files.storage import default_storage
-                    from django.conf import settings
                     from datetime import datetime
                     
                     # Refresh job to get latest progress
