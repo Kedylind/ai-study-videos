@@ -213,15 +213,30 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                     """Update progress in database while pipeline is running."""
                     while process.poll() is None:  # While process is still running
                         try:
+                            # Close any stale database connections before updating
+                            from django.db import connections
+                            connections.close_all()
+                            
                             # Update progress based on file existence
                             update_job_progress_from_files(pmid, self.request.id)
+                            
+                            # Close connections after update to prevent connection leaks
+                            connections.close_all()
+                            
                             time.sleep(5)  # Update every 5 seconds
                         except Exception as e:
-                            logger.warning(f"Error updating progress: {e}")
+                            logger.warning(f"Error updating progress: {e}", exc_info=True)
+                            # Close connections on error too
+                            try:
+                                from django.db import connections
+                                connections.close_all()
+                            except:
+                                pass
                             time.sleep(5)  # Continue even if update fails
                 
                 progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
                 progress_thread.start()
+                logger.info("Started background progress update thread")
                 
                 # Wait for process to complete with timeout handling
                 # Use Celery's time limit minus a buffer for cleanup
@@ -574,7 +589,12 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
         pmid: PubMed ID
         task_id: Optional task ID to find the job record
     """
+    from django.db import connections
+    
     try:
+        # Close any stale connections first (important for threads)
+        connections.close_all()
+        
         from web.models import VideoGenerationJob
         
         # Find job by paper_id and optionally task_id
@@ -582,21 +602,30 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
             try:
                 job = VideoGenerationJob.objects.get(task_id=task_id)
             except VideoGenerationJob.DoesNotExist:
+                logger.debug(f"Job not found for task_id {task_id}")
                 return
         else:
             # Try to find most recent job for this paper_id
             try:
                 job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
                 if not job:
+                    logger.debug(f"No job found for paper_id {pmid}")
                     return
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Error finding job for {pmid}: {e}")
                 return
         
         # Only update if job is still running
         if job.status not in ['pending', 'running']:
+            logger.debug(f"Job {job.id} is not in pending/running state (status: {job.status}), skipping update")
             return
         
         output_dir = Path(settings.MEDIA_ROOT) / pmid
+        
+        # Ensure output directory exists (might not exist yet if pipeline just started)
+        if not output_dir.exists():
+            logger.debug(f"Output directory does not exist yet: {output_dir}")
+            return
         
         # Check pipeline steps
         steps = [
@@ -645,5 +674,11 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
         else:
             logger.debug(f"Job progress unchanged: {progress_percent}%, step: {current_step}")
     except Exception as e:
-        logger.warning(f"Failed to update job progress from files: {e}")
+        logger.warning(f"Failed to update job progress from files: {e}", exc_info=True)
+    finally:
+        # Always close database connections when done (critical for threads)
+        try:
+            connections.close_all()
+        except Exception:
+            pass
 
