@@ -27,7 +27,7 @@
 
     <div class="container">
       <header>
-        <h1>{% block header_title %}KyleAI{% endblock %}</h1>
+        <h1><a href="/" class="header-logo-link">{% block header_title %}KyleAI{% endblock %}</a></h1>
         <nav>
           {% if user.is_authenticated %}
             <span class="nav-welcome">Welcome, <strong>{{ user.username }}</strong></span>
@@ -41,7 +41,6 @@
             <a href="{% url 'login' %}">Login</a>
             <a href="{% url 'register' %}">Register</a>
           {% endif %}
-          <a href="/">Home</a>
         </nav>
       </header>
 

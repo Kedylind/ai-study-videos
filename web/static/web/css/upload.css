@@ -132,6 +132,16 @@ header h1 {
     flex-shrink: 0 !important;
 }
 
+header h1 .header-logo-link {
+    color: #ffffff !important;
+    text-decoration: none !important;
+    transition: opacity 0.3s ease !important;
+}
+
+header h1 .header-logo-link:hover {
+    opacity: 0.8 !important;
+}
+
 header nav {
     display: flex !important;
     flex-direction: row !important;
