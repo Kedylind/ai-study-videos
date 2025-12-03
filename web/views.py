@@ -65,9 +65,12 @@ def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
     
     # Check database for cloud storage
     try:
+        job = None
         if user and user.is_authenticated:
             job = VideoGenerationJob.objects.filter(paper_id=pmid, user=user).order_by('-created_at').first()
-        else:
+        
+        # Fallback: if not found with user filter, check without user filter
+        if not job:
             job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
         
         if job:
@@ -92,15 +95,8 @@ def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
                         # File exists in R2, but FileField might not be set - create URL anyway
                         video_url = reverse("serve_video", args=[pmid])
                         logger.info(f"Video found via final_video_path in R2: {job.final_video_path}")
-                        # Try to set the FileField if it's not already set
-                        if not job.final_video:
-                            logger.info(f"Attempting to set final_video FileField from path: {job.final_video_path}")
-                            try:
-                                job.final_video = job.final_video_path
-                                job.save(update_fields=['final_video', 'updated_at'])
-                                logger.info(f"Successfully set final_video FileField from path")
-                            except Exception as save_error:
-                                logger.warning(f"Failed to set final_video FileField: {save_error}")
+                        # Note: FileField can't be easily set from path, but we can serve via final_video_path
+                        # The FileField will be set properly on future uploads
                         return True, video_url
                     else:
                         logger.warning(f"final_video_path set but file not found in storage: {job.final_video_path}")
@@ -1493,14 +1489,19 @@ def serve_video(request, pmid: str):
         # Try to get from database first (cloud storage)
         from web.models import VideoGenerationJob
         
-        # Get job record
+        # Get job record - try with user filter first, then fallback to any user
+        job = None
         if request.user.is_authenticated:
             job = VideoGenerationJob.objects.filter(
                 paper_id=pmid, 
                 user=request.user
             ).order_by('-created_at').first()
-        else:
+        
+        # Fallback: if not found with user filter, check without user filter
+        if not job:
             job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            if job:
+                logger.info(f"Video found for {pmid} but with different user. Serving anyway.")
         
         # If job has final_video FileField, serve from cloud storage
         if job and job.final_video:
