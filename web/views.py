@@ -60,6 +60,8 @@ def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
         Tuple of (exists: bool, video_url: Optional[str])
     """
     from web.models import VideoGenerationJob
+    import logging
+    logger = logging.getLogger(__name__)
     
     # Check database for cloud storage
     try:
@@ -68,18 +70,45 @@ def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
         else:
             job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
         
-        if job and job.final_video:
-            # Video exists in cloud storage
-            try:
-                # Check if file actually exists in storage
-                if job.final_video.storage.exists(job.final_video.name):
-                    video_url = reverse("serve_video", args=[pmid])
-                    return True, video_url
-            except Exception:
-                pass
+        if job:
+            # First try: Check if final_video FileField is set and file exists in storage
+            if job.final_video:
+                try:
+                    # Check if file actually exists in storage
+                    if job.final_video.storage.exists(job.final_video.name):
+                        video_url = reverse("serve_video", args=[pmid])
+                        logger.debug(f"Video found via final_video FileField: {job.final_video.name}")
+                        return True, video_url
+                    else:
+                        logger.warning(f"final_video FileField set but file not found in storage: {job.final_video.name}")
+                except Exception as e:
+                    logger.warning(f"Error checking final_video FileField: {e}")
+            
+            # Second try: Check if final_video_path is set and file exists in storage
+            if job.final_video_path and settings.USE_CLOUD_STORAGE:
+                try:
+                    from django.core.files.storage import default_storage
+                    if default_storage.exists(job.final_video_path):
+                        # File exists in R2, but FileField might not be set - create URL anyway
+                        video_url = reverse("serve_video", args=[pmid])
+                        logger.info(f"Video found via final_video_path in R2: {job.final_video_path}")
+                        # Try to set the FileField if it's not already set
+                        if not job.final_video:
+                            logger.info(f"Attempting to set final_video FileField from path: {job.final_video_path}")
+                            try:
+                                job.final_video = job.final_video_path
+                                job.save(update_fields=['final_video', 'updated_at'])
+                                logger.info(f"Successfully set final_video FileField from path")
+                            except Exception as save_error:
+                                logger.warning(f"Failed to set final_video FileField: {save_error}")
+                        return True, video_url
+                    else:
+                        logger.warning(f"final_video_path set but file not found in storage: {job.final_video_path}")
+                except Exception as e:
+                    logger.warning(f"Error checking final_video_path in R2: {e}")
     
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error checking video in database: {e}")
     
     # Fallback: check local filesystem (for development or migration period)
     if not settings.USE_CLOUD_STORAGE:
@@ -758,11 +787,10 @@ def home(request):
 def _get_completed_steps_from_progress(progress_percent: int) -> list:
     """Convert progress percent to list of completed step names."""
     steps = [
-        ("fetch-paper", 20),
-        ("generate-script", 40),
-        ("generate-audio", 60),
-        ("generate-videos", 80),
-        ("add-captions", 100),
+        ("fetch-paper", 25),
+        ("generate-script", 50),
+        ("generate-audio", 75),
+        ("generate-videos", 100),
     ]
     
     completed_steps = []
@@ -790,8 +818,7 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
         ("fetch-paper", lambda d: (d / "paper.json").exists()),
         ("generate-script", lambda d: (d / "script.json").exists()),
         ("generate-audio", lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
-        ("generate-videos", lambda d: (d / "clips" / ".videos_complete").exists()),
-        ("add-captions", lambda d: (d / "final_video.mp4").exists()),
+        ("generate-videos", lambda d: (d / "clips" / ".videos_complete").exists() or (d / "final_video.mp4").exists()),
     ]
     
     completed_steps = []
@@ -1275,7 +1302,7 @@ def pipeline_status(request, pmid: str):
                         "current_step": job.current_step,
                         "completed_steps": completed_steps,
                         "progress_percent": job.progress_percent,
-                        "total_steps": 5,
+                        "total_steps": 4,
                     }
                     if job.status == 'failed':
                         progress["error"] = job.error_message
@@ -1302,7 +1329,7 @@ def pipeline_status(request, pmid: str):
                         "current_step": job.current_step,
                         "completed_steps": completed_steps,
                         "progress_percent": job.progress_percent,
-                        "total_steps": 5,
+                        "total_steps": 4,
                     }
                     if job.status == 'failed':
                         progress["error"] = job.error_message
@@ -1335,9 +1362,9 @@ def pipeline_status(request, pmid: str):
                 progress = {
                     "status": "completed",
                     "current_step": None,
-                    "completed_steps": ["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"],
+                    "completed_steps": ["fetch-paper", "generate-script", "generate-audio", "generate-videos"],
                     "progress_percent": 100,
-                    "total_steps": 5,
+                    "total_steps": 4,
                 }
             else:
                 progress = {
@@ -1345,7 +1372,7 @@ def pipeline_status(request, pmid: str):
                     "current_step": None,
                     "completed_steps": [],
                     "progress_percent": 0,
-                    "total_steps": 5,
+                    "total_steps": 4,
                 }
     
     # Check if video exists (cloud storage or local)
@@ -1484,11 +1511,28 @@ def serve_video(request, pmid: str):
                     filename='final_video.mp4'
                 )
             except Exception as e:
-                logger.error(f"Error opening cloud storage file: {e}", exc_info=True)
+                logger.error(f"Error opening cloud storage file via FileField: {e}", exc_info=True)
+        
+        # Fallback: check final_video_path if FileField is not set
+        if job and job.final_video_path and settings.USE_CLOUD_STORAGE:
+            try:
+                # Try to serve directly from R2 using the path
+                if default_storage.exists(job.final_video_path):
+                    logger.info(f"Serving video from R2 using final_video_path: {job.final_video_path}")
+                    return FileResponse(
+                        default_storage.open(job.final_video_path, 'rb'),
+                        content_type='video/mp4',
+                        filename='final_video.mp4'
+                    )
+                else:
+                    logger.warning(f"final_video_path set but file not found in R2: {job.final_video_path}")
+            except Exception as e:
+                logger.error(f"Error serving video from final_video_path: {e}", exc_info=True)
         
         # Fallback: check local filesystem (for development or migration period)
         if settings.USE_CLOUD_STORAGE:
             # In production with cloud storage, if file not in cloud, it doesn't exist
+            logger.error(f"Video not found in cloud storage for {pmid}. Job exists: {job is not None}, final_video: {job.final_video if job else None}, final_video_path: {job.final_video_path if job else None}")
             raise Http404("Video not found in cloud storage")
         else:
             # Local development fallback

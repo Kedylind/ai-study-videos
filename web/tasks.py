@@ -42,71 +42,74 @@ def _parse_pipeline_progress(line: str, current_progress: dict) -> Optional[dict
     line_lower = line.lower()
     
     # Step completion markers - based on actual pipeline.py logging
+    # Progress: 25%, 50%, 75%, 100% for 4 steps
     step_markers = {
         "fetch-paper": {
             "start": "step: fetch-paper",
             "complete": "complete",  # "✓ Complete" or "✓ Already complete, skipping"
-            "percent": 20,
+            "percent": 25,
         },
         "generate-script": {
             "start": "step: generate-script",
             "complete": "complete",
-            "percent": 40,
+            "percent": 50,
         },
         "generate-audio": {
             "start": "step: generate-audio",
             "complete": "complete",
-            "percent": 60,
+            "percent": 75,
         },
         "generate-videos": {
             "start": "step: generate-videos",
-            "complete": "complete",
-            "percent": 80,
-        },
-        "add-captions": {
-            "start": "step: add-captions",
             "complete": "complete",
             "percent": 100,
         },
     }
     
-    # Check for step completions - look for "✓ Complete" or "✓ Already complete"
-    # Pipeline logs: "Step: fetch-paper" then "  ✓ Complete" or "  ✓ Already complete, skipping"
+    # Check for step starts first (before completion checks)
+    # Pipeline logs: "Step: fetch-paper" (capital S)
     for step_name, markers in step_markers.items():
-        # Check if this step is mentioned in the line
-        step_keyword = step_name.replace("-", " ")
-        if markers["start"] in line_lower or f"step: {step_name}" in line_lower:
-            # Check if step completed - look for checkmark with "complete" or "already complete"
-            if "✓" in line and ("complete" in line_lower or "already" in line_lower):
-                # Step completed
-                completed_steps = current_progress.get("completed_steps", [])
-                if step_name not in completed_steps:
-                    updated = current_progress.copy()
-                    updated["progress_percent"] = markers["percent"]
+        # Check if this step is starting - pipeline logs "Step: <step-name>"
+        if f"step: {step_name}" in line_lower:
+            completed_steps = current_progress.get("completed_steps", [])
+            # Always update current step when pipeline logs it, even if already set
+            # This ensures the UI shows the correct step immediately
+            updated = current_progress.copy()
+            updated["current_step"] = step_name
+            # Set progress to previous step's completion percent
+            if completed_steps:
+                # Find the percent for the last completed step
+                last_completed = completed_steps[-1]
+                for sname, smarkers in step_markers.items():
+                    if sname == last_completed:
+                        updated["progress_percent"] = smarkers["percent"]
+                        break
+            else:
+                updated["progress_percent"] = 0
+            logger.debug(f"Detected step start: {step_name}")
+            return updated
+    
+    # Check for step completions - look for "✓ Complete" or "✓ Already complete"
+    # Pipeline logs: "  ✓ Complete" or "  ✓ Already complete, skipping"
+    # Use current_step context to determine which step completed
+    current_step = current_progress.get("current_step")
+    if "✓" in line and ("complete" in line_lower or "already" in line_lower):
+        # Find which step just completed based on current_step or line content
+        for step_name, markers in step_markers.items():
+            completed_steps = current_progress.get("completed_steps", [])
+            # Match if this is the current step being tracked, or step name appears in line
+            if (current_step == step_name or step_name in line_lower) and step_name not in completed_steps:
+                updated = current_progress.copy()
+                updated["progress_percent"] = markers["percent"]
+                # Keep current_step until next step starts (don't clear immediately)
+                # Only clear if this is the final step (100%)
+                if markers["percent"] >= 100:
                     updated["current_step"] = None
-                    if "completed_steps" not in updated:
-                        updated["completed_steps"] = []
-                    updated["completed_steps"] = completed_steps + [step_name]
-                    logger.debug(f"Detected step completion: {step_name} -> {markers['percent']}%")
-                    return updated
-            elif "step:" in line_lower and step_name in line_lower:
-                # Step started but not completed yet - update current step
-                completed_steps = current_progress.get("completed_steps", [])
-                if step_name not in completed_steps and current_progress.get("current_step") != step_name:
-                    updated = current_progress.copy()
-                    updated["current_step"] = step_name
-                    # Set progress to previous step's completion or current step start
-                    if completed_steps:
-                        # Find the percent for the last completed step
-                        last_completed = completed_steps[-1]
-                        for sname, smarkers in step_markers.items():
-                            if sname == last_completed:
-                                updated["progress_percent"] = smarkers["percent"]
-                                break
-                    else:
-                        updated["progress_percent"] = 0
-                    logger.debug(f"Detected step start: {step_name}")
-                    return updated
+                if "completed_steps" not in updated:
+                    updated["completed_steps"] = []
+                updated["completed_steps"] = completed_steps + [step_name]
+                logger.debug(f"Detected step completion: {step_name} -> {markers['percent']}%")
+                return updated
     
     # Check for pipeline completion
     if "pipeline complete!" in line_lower:
@@ -510,9 +513,15 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         try:
                             with open(final_video, 'rb') as f:
                                 django_file = File(f, name=video_filename)
+                                # Upload to R2 storage (save=False means upload to storage but don't save to DB yet)
                                 job.final_video.save(video_filename, django_file, save=False)
                                 job.final_video_path = job.final_video.name  # Store the storage path
                                 logger.info(f"Video uploaded to cloud storage: {job.final_video.name}")
+                                
+                                # CRITICAL: Save the FileField to database immediately after R2 upload
+                                # The FileField.name is now set, but needs to be persisted to DB
+                                job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
+                                logger.info(f"Saved final_video FileField to database: {job.final_video.name}")
                                 
                                 # Delete local file after successful R2 upload to save disk space
                                 try:
@@ -557,11 +566,24 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         job.completed_at = timezone.now()
                         job.save(update_fields=['final_video', 'final_video_path', 'status', 'progress_percent', 'current_step', 'completed_at', 'updated_at'])
                     else:
-                        # Still need to save final_video and final_video_path
+                        # Still need to save final_video and final_video_path after progress manager update
+                        # CRITICAL: Ensure final_video is saved to database after R2 upload
                         job.refresh_from_db()
-                        job.final_video = job.final_video  # Keep existing value
-                        job.final_video_path = job.final_video_path  # Keep existing value
-                        job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
+                        # After R2 upload with save=False, we need to explicitly save the FileField to DB
+                        if job.final_video and job.final_video.name:
+                            # FileField was set by the .save() call, now persist it to database
+                            logger.info(f"Persisting final_video to database: {job.final_video.name}")
+                            job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
+                        else:
+                            logger.warning(f"final_video not set after R2 upload, attempting to reload job")
+                            job.refresh_from_db()
+                            if not job.final_video and job.final_video_path:
+                                # Fallback: try to reconstruct the FileField from the path
+                                logger.info(f"Attempting to set final_video from path: {job.final_video_path}")
+                                from django.core.files.base import ContentFile
+                                # Create a FileField reference to the existing R2 file
+                                job.final_video = job.final_video_path
+                                job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
                     
                 except Exception as e:
                     logger.error(f"Failed to update job record on completion: {e}", exc_info=True)
@@ -877,13 +899,12 @@ def update_job_progress_from_files(pmid: str, task_id: Optional[str] = None) -> 
             logger.debug(f"Output directory does not exist yet: {output_dir}")
             return
         
-        # Check pipeline steps
+        # Check pipeline steps (4 steps: 25%, 50%, 75%, 100%)
         steps = [
-            ("fetch-paper", 20, lambda d: (d / "paper.json").exists()),
-            ("generate-script", 40, lambda d: (d / "script.json").exists()),
-            ("generate-audio", 60, lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
-            ("generate-videos", 80, lambda d: (d / "clips" / ".videos_complete").exists()),
-            ("add-captions", 100, lambda d: (d / "final_video.mp4").exists()),
+            ("fetch-paper", 25, lambda d: (d / "paper.json").exists()),
+            ("generate-script", 50, lambda d: (d / "script.json").exists()),
+            ("generate-audio", 75, lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
+            ("generate-videos", 100, lambda d: (d / "clips" / ".videos_complete").exists() or (d / "final_video.mp4").exists()),
         ]
         
         current_step = None
