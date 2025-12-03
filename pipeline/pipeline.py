@@ -37,6 +37,22 @@ def check_paper_fetched(output_dir: Path) -> bool:
     return paper_json.exists()
 
 
+def fetch_paper_if_needed(pmid: str, output_dir: str) -> None:
+    """
+    Fetch paper from PubMed Central only if paper.json doesn't exist.
+    
+    This allows the pipeline to work with pre-created paper.json files
+    (e.g., from file uploads).
+    """
+    paper_json = Path(output_dir) / "paper.json"
+    if paper_json.exists():
+        logger.info(f"paper.json already exists in {output_dir}, skipping fetch-paper step")
+        return
+    
+    # Paper.json doesn't exist, fetch from PubMed
+    fetch_paper(pmid, output_dir)
+
+
 def check_script_generated(output_dir: Path) -> bool:
     """Check if script has been generated."""
     script_json = output_dir / "script.json"
@@ -95,7 +111,7 @@ def orchestrate_pipeline(
             name="fetch-paper",
             description=f"Fetching paper {pmid} from PubMed Central",
             check_completion=lambda: check_paper_fetched(output_dir),
-            execute=lambda: fetch_paper(pmid, str(output_dir)),
+            execute=lambda: fetch_paper_if_needed(pmid, str(output_dir)),
         ),
         PipelineStep(
             name="generate-script",

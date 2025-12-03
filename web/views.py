@@ -21,6 +21,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
 from .tasks import generate_video_task, get_task_status, update_job_progress_from_files, test_r2_storage_write_task
+from .pdf_extractor import extract_pdf_content, validate_pdf, generate_paper_id
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -1205,18 +1206,88 @@ def upload_paper(request):
             uploaded = form.cleaned_data.get("file")
 
             if uploaded:
-                # Save uploaded file into media/<basename>/uploaded_file
-                name = Path(uploaded.name).stem
-                out_dir = Path(settings.MEDIA_ROOT) / name
+                # Validate file extension
+                if not uploaded.name.lower().endswith('.pdf'):
+                    form.add_error("file", "Only PDF files are supported.")
+                    return render(request, "upload.html", {"form": form})
+                
+                # Validate file size (50MB max)
+                max_size = 50 * 1024 * 1024  # 50MB
+                if uploaded.size > max_size:
+                    size_mb = uploaded.size / (1024 * 1024)
+                    form.add_error("file", f"File size ({size_mb:.1f}MB) exceeds maximum allowed size (50MB)")
+                    return render(request, "upload.html", {"form": form})
+                
+                # Generate unique paper ID
+                paper_id = generate_paper_id(uploaded.name, use_hash=False)
+                
+                # Save uploaded file
+                out_dir = Path(settings.MEDIA_ROOT) / paper_id
                 out_dir.mkdir(parents=True, exist_ok=True)
                 file_path = out_dir / uploaded.name
-                with open(file_path, "wb") as f:
-                    for chunk in uploaded.chunks():
-                        f.write(chunk)
-
-                # TODO: support pipeline from local file; for now, return to status page
-                # We'll treat 'name' as an identifier
-                pmid = name
+                
+                try:
+                    with open(file_path, "wb") as f:
+                        for chunk in uploaded.chunks():
+                            f.write(chunk)
+                    
+                    logger.info(f"Saved uploaded file to {file_path}")
+                    
+                    # Validate PDF structure
+                    is_valid, error_msg = validate_pdf(file_path)
+                    if not is_valid:
+                        form.add_error("file", error_msg)
+                        # Clean up saved file
+                        try:
+                            file_path.unlink()
+                            out_dir.rmdir()
+                        except:
+                            pass
+                        return render(request, "upload.html", {"form": form})
+                    
+                    # Extract PDF content and create paper.json
+                    try:
+                        paper_data = extract_pdf_content(file_path, filename=uploaded.name)
+                        paper_json_path = out_dir / "paper.json"
+                        
+                        import json
+                        with open(paper_json_path, "w", encoding="utf-8") as f:
+                            json.dump(paper_data, f, indent=2, ensure_ascii=False)
+                        
+                        logger.info(f"Extracted PDF content and created paper.json for {paper_id}")
+                        pmid = paper_id  # Use generated ID
+                        
+                    except ValueError as e:
+                        # User-friendly error (validation, extraction issues)
+                        logger.error(f"PDF extraction failed: {e}")
+                        form.add_error("file", f"Failed to extract content from PDF: {str(e)}")
+                        # Clean up
+                        try:
+                            file_path.unlink()
+                            if (out_dir / "paper.json").exists():
+                                (out_dir / "paper.json").unlink()
+                            out_dir.rmdir()
+                        except:
+                            pass
+                        return render(request, "upload.html", {"form": form})
+                    except Exception as e:
+                        # Unexpected error
+                        logger.error(f"Unexpected error during PDF extraction: {e}", exc_info=True)
+                        form.add_error("file", "An unexpected error occurred while processing the PDF. Please try again or contact support.")
+                        # Clean up
+                        try:
+                            file_path.unlink()
+                            if (out_dir / "paper.json").exists():
+                                (out_dir / "paper.json").unlink()
+                            out_dir.rmdir()
+                        except:
+                            pass
+                        return render(request, "upload.html", {"form": form})
+                        
+                except Exception as e:
+                    logger.error(f"Failed to save uploaded file: {e}", exc_info=True)
+                    form.add_error("file", f"Failed to save uploaded file: {str(e)}")
+                    return render(request, "upload.html", {"form": form})
             else:
                 if not pmid:
                     form.add_error(None, "Provide a PubMed ID or upload a file")
