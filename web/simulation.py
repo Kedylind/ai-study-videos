@@ -101,18 +101,6 @@ def create_step_files(output_dir: Path, step_name: str):
         }, indent=2))
         logger.info(f"Simulated: Created {video_metadata}")
         
-    elif step_name == "add-captions":
-        # Step 5: Final video with captions
-        # Ensure prerequisites exist
-        if not (output_dir / "clips" / ".videos_complete").exists():
-            create_step_files(output_dir, "generate-videos")
-        
-        # Create a minimal MP4 file (dummy file for testing)
-        final_video = output_dir / "final_video.mp4"
-        mp4_header = b'ftyp' + b'mp41' + b'\x00' * 20  # Minimal valid MP4 start
-        final_video.write_bytes(mp4_header)
-        logger.info(f"Simulated: Created {final_video} (dummy file)")
-        
     else:
         raise ValueError(f"Unknown step: {step_name}")
 
@@ -121,13 +109,12 @@ def update_job_progress(job, step_name: str):
     """Update a VideoGenerationJob record with progress for a step."""
     from django.db import connections
     
-    # Map step names to progress percentages
+    # Map step names to progress percentages (4 steps: 25%, 50%, 75%, 100%)
     step_progress = {
-        "fetch-paper": (20, "fetch-paper"),
-        "generate-script": (40, "generate-script"),
-        "generate-audio": (60, "generate-audio"),
-        "generate-videos": (80, "generate-videos"),
-        "add-captions": (100, None),  # None means completed, no current step
+        "fetch-paper": (25, "fetch-paper"),
+        "generate-script": (50, "generate-script"),
+        "generate-audio": (75, "generate-audio"),
+        "generate-videos": (100, None),  # None means completed, no current step
     }
     
     progress_percent, current_step = step_progress.get(step_name, (0, step_name))
@@ -140,17 +127,38 @@ def update_job_progress(job, step_name: str):
         # Refresh job from database to avoid stale data
         job.refresh_from_db()
         
-        job.status = status
-        job.progress_percent = progress_percent
-        job.current_step = current_step
-        
-        if status == "completed":
-            job.completed_at = django_timezone.now()
-            final_video = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
-            if final_video.exists():
-                job.final_video_path = str(final_video)
-        
-        job.save(update_fields=['status', 'progress_percent', 'current_step', 'completed_at', 'final_video_path', 'updated_at'])
+        # Use progress manager for updates
+        try:
+            from web.progress_manager import update_progress
+            update_progress(
+                task_id=task_id,
+                progress_percent=progress_percent,
+                current_step=current_step,
+                status=status
+            )
+            # Refresh to get updated values
+            job.refresh_from_db()
+            
+            # Handle completion-specific fields
+            if status == "completed":
+                final_video = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
+                if final_video.exists():
+                    job.final_video_path = str(final_video)
+                    job.save(update_fields=['final_video_path', 'updated_at'])
+        except Exception as e:
+            logger.warning(f"Failed to update progress via manager in simulation, updating directly: {e}")
+            # Fallback to direct update
+            job.status = status
+            job.progress_percent = progress_percent
+            job.current_step = current_step
+            
+            if status == "completed":
+                job.completed_at = django_timezone.now()
+                final_video = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
+                if final_video.exists():
+                    job.final_video_path = str(final_video)
+            
+            job.save(update_fields=['status', 'progress_percent', 'current_step', 'completed_at', 'final_video_path', 'updated_at'])
         logger.info(f"Updated job record: {status} - {progress_percent}% - {current_step}")
     except Exception as e:
         logger.error(f"Error updating job progress: {e}")
@@ -171,7 +179,7 @@ def simulate_pipeline_progress(pmid: str, output_dir: Path, task_id: str, job=No
         job: Optional VideoGenerationJob instance to update
         delay_per_step: Delay in seconds between steps (default: 3.0)
     """
-    steps = ["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"]
+    steps = ["fetch-paper", "generate-script", "generate-audio", "generate-videos"]
     
     logger.info(f"Starting simulation for {pmid} (task {task_id})")
     

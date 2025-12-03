@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 
 from django.conf import settings
 from django.utils import timezone
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 from django.contrib.auth import login
@@ -60,26 +61,97 @@ def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
         Tuple of (exists: bool, video_url: Optional[str])
     """
     from web.models import VideoGenerationJob
+    import logging
+    logger = logging.getLogger(__name__)
     
     # Check database for cloud storage
     try:
+        job = None
         if user and user.is_authenticated:
             job = VideoGenerationJob.objects.filter(paper_id=pmid, user=user).order_by('-created_at').first()
-        else:
+        
+        # Fallback: if not found with user filter, check without user filter
+        if not job:
             job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
         
-        if job and job.final_video:
-            # Video exists in cloud storage
-            try:
-                # Check if file actually exists in storage
-                if job.final_video.storage.exists(job.final_video.name):
-                    video_url = reverse("serve_video", args=[pmid])
-                    return True, video_url
-            except Exception:
-                pass
+        if job:
+            # First try: Check if final_video FileField is set and file exists in storage
+            if job.final_video:
+                try:
+                    # Check if file actually exists in storage
+                    if job.final_video.storage.exists(job.final_video.name):
+                        video_url = reverse("serve_video", args=[pmid])
+                        logger.debug(f"Video found via final_video FileField: {job.final_video.name}")
+                        return True, video_url
+                    else:
+                        logger.warning(f"final_video FileField set but file not found in storage: {job.final_video.name}")
+                except Exception as e:
+                    logger.warning(f"Error checking final_video FileField: {e}")
+            
+            # Second try: Check if final_video_path is set and file exists in storage
+            if job.final_video_path and settings.USE_CLOUD_STORAGE:
+                try:
+                    from django.core.files.storage import default_storage
+                    if default_storage.exists(job.final_video_path):
+                        # File exists in R2, but FileField might not be set - create URL anyway
+                        video_url = reverse("serve_video", args=[pmid])
+                        logger.info(f"Video found via final_video_path in R2: {job.final_video_path}")
+                        # Note: FileField can't be easily set from path, but we can serve via final_video_path
+                        # The FileField will be set properly on future uploads
+                        return True, video_url
+                    else:
+                        logger.warning(f"final_video_path set but file not found in storage: {job.final_video_path}")
+                except Exception as e:
+                    logger.warning(f"Error checking final_video_path in R2: {e}")
+            
+            # Third try: If both fields are empty but video exists in R2, search for it
+            if not job.final_video and not job.final_video_path and settings.USE_CLOUD_STORAGE:
+                try:
+                    from django.core.files.storage import default_storage
+                    # Try to find video file by searching for patterns
+                    # Pattern: videos/YYYY/MM/DD/PMCID_final_video_*.mp4
+                    found_path = None
+                    
+                    # Try common date patterns
+                    from datetime import datetime
+                    now = datetime.now()
+                    
+                    # Check recent dates (today and yesterday)
+                    for days_ago in range(7):  # Check last 7 days
+                        check_date = now - timedelta(days=days_ago)
+                        date_path = f"videos/{check_date.year}/{check_date.month:02d}/{check_date.day:02d}/"
+                        
+                        # Try to find files matching the pattern
+                        try:
+                            # List files in this date directory
+                            if hasattr(default_storage, 'listdir'):
+                                try:
+                                    _, files = default_storage.listdir(date_path)
+                                    for filename in files:
+                                        if filename.startswith(f"{pmid}_final_video_") and filename.endswith('.mp4'):
+                                            found_path = date_path + filename
+                                            logger.info(f"Found video in R2 storage: {found_path}")
+                                            break
+                                except:
+                                    pass
+                            
+                            if found_path:
+                                break
+                        except:
+                            continue
+                    
+                    if found_path and default_storage.exists(found_path):
+                        # Update database with found path
+                        job.final_video_path = found_path
+                        job.save(update_fields=['final_video_path', 'updated_at'])
+                        logger.info(f"Auto-updated final_video_path: {found_path}")
+                        video_url = reverse("serve_video", args=[pmid])
+                        return True, video_url
+                except Exception as e:
+                    logger.warning(f"Error searching for video in R2: {e}")
     
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error checking video in database: {e}")
     
     # Fallback: check local filesystem (for development or migration period)
     if not settings.USE_CLOUD_STORAGE:
@@ -758,11 +830,10 @@ def home(request):
 def _get_completed_steps_from_progress(progress_percent: int) -> list:
     """Convert progress percent to list of completed step names."""
     steps = [
-        ("fetch-paper", 20),
-        ("generate-script", 40),
-        ("generate-audio", 60),
-        ("generate-videos", 80),
-        ("add-captions", 100),
+        ("fetch-paper", 25),
+        ("generate-script", 50),
+        ("generate-audio", 75),
+        ("generate-videos", 100),
     ]
     
     completed_steps = []
@@ -790,8 +861,7 @@ def _get_pipeline_progress(output_dir: Path) -> Dict:
         ("fetch-paper", lambda d: (d / "paper.json").exists()),
         ("generate-script", lambda d: (d / "script.json").exists()),
         ("generate-audio", lambda d: (d / "audio.wav").exists() and (d / "audio_metadata.json").exists()),
-        ("generate-videos", lambda d: (d / "clips" / ".videos_complete").exists()),
-        ("add-captions", lambda d: (d / "final_video.mp4").exists()),
+        ("generate-videos", lambda d: (d / "clips" / ".videos_complete").exists() or (d / "final_video.mp4").exists()),
     ]
     
     completed_steps = []
@@ -1187,7 +1257,7 @@ def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = 
 def upload_paper(request):
     """Simple UI to accept a PubMed ID/PMCID and start the pipeline."""
     if request.method == "POST":
-        form = PaperUploadForm(request.POST, request.FILES)
+        form = PaperUploadForm(request.POST)
         if form.is_valid():
             # Validate access code
             access_code = form.cleaned_data.get("access_code", "")
@@ -1201,40 +1271,24 @@ def upload_paper(request):
                 return render(request, "upload.html", {"form": form})
             
             pmid = form.cleaned_data.get("paper_id")
-            # If a file is uploaded we save it and use a folder named by filename
-            uploaded = form.cleaned_data.get("file")
+            
+            if not pmid:
+                form.add_error("paper_id", "Please provide a PubMed ID or PMCID")
+                return render(request, "upload.html", {"form": form})
 
-            if uploaded:
-                # Save uploaded file into media/<basename>/uploaded_file
-                name = Path(uploaded.name).stem
-                out_dir = Path(settings.MEDIA_ROOT) / name
-                out_dir.mkdir(parents=True, exist_ok=True)
-                file_path = out_dir / uploaded.name
-                with open(file_path, "wb") as f:
-                    for chunk in uploaded.chunks():
-                        f.write(chunk)
-
-                # TODO: support pipeline from local file; for now, return to status page
-                # We'll treat 'name' as an identifier
-                pmid = name
+            # Normalize pmid
+            pmid = pmid.strip()
+            
+            # Skip validation for test IDs in simulation mode (e.g., TEST123, TEST456)
+            # This allows testing the upload flow without validating against PubMed
+            if settings.SIMULATION_MODE and pmid.upper().startswith("TEST"):
+                logger.info(f"Simulation mode: Skipping paper ID validation for test ID: {pmid}")
             else:
-                if not pmid:
-                    form.add_error(None, "Provide a PubMed ID or upload a file")
+                # Validate paper ID before starting pipeline
+                is_valid, error_message = _validate_paper_id(pmid)
+                if not is_valid:
+                    form.add_error("paper_id", error_message)
                     return render(request, "upload.html", {"form": form})
-
-                # Normalize pmid
-                pmid = pmid.strip()
-                
-                # Skip validation for test IDs in simulation mode (e.g., TEST123, TEST456)
-                # This allows testing the upload flow without validating against PubMed
-                if settings.SIMULATION_MODE and pmid.upper().startswith("TEST"):
-                    logger.info(f"Simulation mode: Skipping paper ID validation for test ID: {pmid}")
-                else:
-                    # Validate paper ID before starting pipeline
-                    is_valid, error_message = _validate_paper_id(pmid)
-                    if not is_valid:
-                        form.add_error("paper_id", error_message)
-                        return render(request, "upload.html", {"form": form})
 
             # Start pipeline asynchronously and redirect to status page
             output_dir = Path(settings.MEDIA_ROOT) / pmid
@@ -1268,18 +1322,17 @@ def pipeline_status(request, pmid: str):
                     # No job found, fall through to file-based check
                     pass
                 else:
-                    # Update progress from files if job is running
+                    # Just refresh from database - real-time parser handles updates
+                    job.refresh_from_db()
+                    
+                    # Check if progress is stale (for logging/debugging)
                     if job.status in ['pending', 'running']:
-                        task_id_file = output_dir / "task_id.txt"
-                        task_id = None
-                        if task_id_file.exists():
-                            try:
-                                with open(task_id_file, "r") as f:
-                                    task_id = f.read().strip()
-                            except:
-                                pass
-                        update_job_progress_from_files(pmid, task_id)
-                        job.refresh_from_db()
+                        from web.progress_manager import is_progress_stale
+                        if is_progress_stale(job):
+                            logger.warning(
+                                f"Progress appears stale for job {job.id} (paper {pmid}), "
+                                f"last update: {job.progress_updated_at}"
+                            )
                     
                     # Convert job to progress dict
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
@@ -1292,7 +1345,7 @@ def pipeline_status(request, pmid: str):
                         "current_step": job.current_step,
                         "completed_steps": completed_steps,
                         "progress_percent": job.progress_percent,
-                        "total_steps": 5,
+                        "total_steps": 4,
                     }
                     if job.status == 'failed':
                         progress["error"] = job.error_message
@@ -1301,17 +1354,17 @@ def pipeline_status(request, pmid: str):
                 # Multiple jobs found - get the most recent one
                 job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
                 if job:
+                    # Just refresh from database - real-time parser handles updates
+                    job.refresh_from_db()
+                    
+                    # Check if progress is stale (for logging/debugging)
                     if job.status in ['pending', 'running']:
-                        task_id_file = output_dir / "task_id.txt"
-                        task_id = None
-                        if task_id_file.exists():
-                            try:
-                                with open(task_id_file, "r") as f:
-                                    task_id = f.read().strip()
-                            except:
-                                pass
-                        update_job_progress_from_files(pmid, task_id)
-                        job.refresh_from_db()
+                        from web.progress_manager import is_progress_stale
+                        if is_progress_stale(job):
+                            logger.warning(
+                                f"Progress appears stale for job {job.id} (paper {pmid}), "
+                                f"last update: {job.progress_updated_at}"
+                            )
                     
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
                     progress = {
@@ -1319,7 +1372,7 @@ def pipeline_status(request, pmid: str):
                         "current_step": job.current_step,
                         "completed_steps": completed_steps,
                         "progress_percent": job.progress_percent,
-                        "total_steps": 5,
+                        "total_steps": 4,
                     }
                     if job.status == 'failed':
                         progress["error"] = job.error_message
@@ -1352,9 +1405,9 @@ def pipeline_status(request, pmid: str):
                 progress = {
                     "status": "completed",
                     "current_step": None,
-                    "completed_steps": ["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"],
+                    "completed_steps": ["fetch-paper", "generate-script", "generate-audio", "generate-videos"],
                     "progress_percent": 100,
-                    "total_steps": 5,
+                    "total_steps": 4,
                 }
             else:
                 progress = {
@@ -1362,7 +1415,7 @@ def pipeline_status(request, pmid: str):
                     "current_step": None,
                     "completed_steps": [],
                     "progress_percent": 0,
-                    "total_steps": 5,
+                    "total_steps": 4,
                 }
     
     # Check if video exists (cloud storage or local)
@@ -1383,7 +1436,21 @@ def pipeline_status(request, pmid: str):
             "current_step": progress.get("current_step"),
             "completed_steps": progress.get("completed_steps", []),
             "progress_percent": progress.get("progress_percent", 0),
+            "progress_updated_at": None,  # Add timestamp
         }
+        
+        # Add progress timestamp if available from job
+        try:
+            from web.models import VideoGenerationJob
+            if request.user.is_authenticated:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+            else:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            
+            if job and job.progress_updated_at:
+                status["progress_updated_at"] = job.progress_updated_at.isoformat()
+        except Exception:
+            pass  # Ignore errors getting timestamp
         
         # CRITICAL FIX: If status is completed or progress is 100%, ensure final_video_url is set
         if (status["status"] == "completed" or status["progress_percent"] >= 100):
@@ -1400,20 +1467,16 @@ def pipeline_status(request, pmid: str):
             status["error_type"] = progress["error_type"]
             # Add user-friendly error message
             status["error_message"] = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
-        
-        # include tail of log if present
-        if log_path.exists():
-            try:
-                with open(log_path, "rb") as f:
-                    f.seek(max(0, f.tell() - 8192))
-                    data = f.read().decode(errors="replace")
-            except Exception:
-                data = ""
-            status["log_tail"] = data
 
         import json
         response = JsonResponse(status)
         response.content = json.dumps(status, indent=2)
+        
+        # Prevent browser caching of progress updates
+        response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response['Pragma'] = 'no-cache'
+        response['Expires'] = '0'
+        
         return response
 
     # Render an HTML status page
@@ -1473,14 +1536,19 @@ def serve_video(request, pmid: str):
         # Try to get from database first (cloud storage)
         from web.models import VideoGenerationJob
         
-        # Get job record
+        # Get job record - try with user filter first, then fallback to any user
+        job = None
         if request.user.is_authenticated:
             job = VideoGenerationJob.objects.filter(
                 paper_id=pmid, 
                 user=request.user
             ).order_by('-created_at').first()
-        else:
+        
+        # Fallback: if not found with user filter, check without user filter
+        if not job:
             job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            if job:
+                logger.info(f"Video found for {pmid} but with different user. Serving anyway.")
         
         # If job has final_video FileField, serve from cloud storage
         if job and job.final_video:
@@ -1491,11 +1559,28 @@ def serve_video(request, pmid: str):
                     filename='final_video.mp4'
                 )
             except Exception as e:
-                logger.error(f"Error opening cloud storage file: {e}", exc_info=True)
+                logger.error(f"Error opening cloud storage file via FileField: {e}", exc_info=True)
+        
+        # Fallback: check final_video_path if FileField is not set
+        if job and job.final_video_path and settings.USE_CLOUD_STORAGE:
+            try:
+                # Try to serve directly from R2 using the path
+                if default_storage.exists(job.final_video_path):
+                    logger.info(f"Serving video from R2 using final_video_path: {job.final_video_path}")
+                    return FileResponse(
+                        default_storage.open(job.final_video_path, 'rb'),
+                        content_type='video/mp4',
+                        filename='final_video.mp4'
+                    )
+                else:
+                    logger.warning(f"final_video_path set but file not found in R2: {job.final_video_path}")
+            except Exception as e:
+                logger.error(f"Error serving video from final_video_path: {e}", exc_info=True)
         
         # Fallback: check local filesystem (for development or migration period)
         if settings.USE_CLOUD_STORAGE:
             # In production with cloud storage, if file not in cloud, it doesn't exist
+            logger.error(f"Video not found in cloud storage for {pmid}. Job exists: {job is not None}, final_video: {job.final_video if job else None}, final_video_path: {job.final_video_path if job else None}")
             raise Http404("Video not found in cloud storage")
         else:
             # Local development fallback
@@ -1769,18 +1854,17 @@ def api_status(request, paper_id: str):
                 job = None
         
         if job:
-            # Update progress from files if job is running
+            # Just refresh from database - real-time parser handles updates
+            job.refresh_from_db()
+            
+            # Check if progress is stale (for logging/debugging)
             if job.status in ['pending', 'running']:
-                task_id_file = output_dir / "task_id.txt"
-                task_id = None
-                if task_id_file.exists():
-                    try:
-                        with open(task_id_file, "r") as f:
-                            task_id = f.read().strip()
-                    except:
-                        pass
-                update_job_progress_from_files(paper_id, task_id)
-                job.refresh_from_db()
+                from web.progress_manager import is_progress_stale
+                if is_progress_stale(job):
+                    logger.warning(
+                        f"Progress appears stale for job {job.id} (paper {paper_id}), "
+                        f"last update: {job.progress_updated_at}"
+                    )
             
             # Convert job to progress dict
             completed_steps = _get_completed_steps_from_progress(job.progress_percent)
@@ -1796,6 +1880,7 @@ def api_status(request, paper_id: str):
                 "current_step": job.current_step,
                 "completed_steps": completed_steps,
                 "progress_percent": job.progress_percent,
+                "progress_updated_at": job.progress_updated_at.isoformat() if job.progress_updated_at else None,
             }
             if job.status == 'failed':
                 progress["error"] = job.error_message
@@ -1842,11 +1927,19 @@ def api_status(request, paper_id: str):
         "current_step": progress["current_step"],
         "completed_steps": progress["completed_steps"],
         "progress_percent": progress["progress_percent"],
+        "progress_updated_at": progress.get("progress_updated_at"),
         "final_video_url": final_video_url,
         "log_tail": log_tail,
     }
     
-    return JsonResponse(response)
+    json_response = JsonResponse(response)
+    
+    # Prevent browser caching of progress updates
+    json_response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    json_response['Pragma'] = 'no-cache'
+    json_response['Expires'] = '0'
+    
+    return json_response
 
 
 @require_http_methods(["GET"])

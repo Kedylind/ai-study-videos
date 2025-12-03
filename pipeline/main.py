@@ -21,7 +21,6 @@ from pubmed import fetch_paper, PMCNotFoundError
 from scenes import generate_scenes, save_scenes, load_scenes
 from audio import generate_audio, save_audio_metadata
 from video import generate_videos, save_video_metadata
-from captions import add_captions_to_all_scenes
 from pipeline import orchestrate_pipeline, PipelineError
 
 logging.basicConfig(
@@ -401,118 +400,6 @@ def generate_videos_cmd(metadata_file, output_dir, max_workers, poll_interval):
 
 
 @cli.command()
-@click.argument("metadata_file", type=click.Path(exists=True))
-@click.option(
-    "--clips-dir",
-    "-c",
-    default=None,
-    help="Directory containing scene videos (default: clips/ in same directory as metadata)",
-)
-@click.option(
-    "--output-dir",
-    "-o",
-    default=None,
-    help="Output directory for captioned videos (default: clips_captioned/ in same directory as metadata)",
-)
-@click.option(
-    "--max-words",
-    "-m",
-    default=2,
-    type=int,
-    help="Maximum words per caption segment (default: 2, TikTok style)",
-)
-@click.option(
-    "--font-size",
-    "-f",
-    default=100,
-    type=int,
-    help="Font size for captions (default: 100)",
-)
-@click.option(
-    "--no-merge",
-    is_flag=True,
-    help="Skip merging captioned video clips into a single final video",
-)
-def add_captions(metadata_file, clips_dir, output_dir, max_words, font_size, no_merge):
-    """Add TikTok-style captions to video clips.
-
-    METADATA_FILE: Path to audio_metadata.json (from generate-audio command)
-
-    This will add word-by-word captions to all generated video clips using a
-    simple time-based distribution of words. Captions are burned into the video
-    using FFmpeg with ASS subtitle format.
-
-    Caption styling:
-    - Bold white text with black outline (TikTok style)
-    - Center positioning for vertical video (9:16)
-    - 2-3 words appear at a time
-    - Words distributed evenly across scene duration
-
-    Output:
-    - Captioned video clips (scene_XX_captioned.mp4)
-    - ASS subtitle files (scene_XX.ass) for reference
-
-    Example:
-        python main.py add-captions ./my_paper/audio_metadata.json
-        python main.py add-captions ./my_paper/audio_metadata.json --max-words 3 --font-size 28
-    """
-    try:
-        metadata_path = Path(metadata_file)
-
-        clips_path = Path(clips_dir) if clips_dir else None
-        output_path = Path(output_dir) if output_dir else None
-
-        click.echo(f"Loading metadata from {metadata_path}...")
-        click.echo(f"Caption settings:")
-        click.echo(f"  - Max words per segment: {max_words}")
-        click.echo(f"  - Font size: {font_size}")
-        click.echo("")
-
-        # Add captions to all scenes
-        captioned_videos = add_captions_to_all_scenes(
-            metadata_path,
-            clips_dir=clips_path,
-            output_dir=output_path,
-            max_words=max_words,
-            font_size=font_size,
-            merge=not no_merge,
-        )
-
-        if not captioned_videos:
-            click.secho("✗ No videos were captioned", fg="yellow")
-            click.echo("Make sure video clips exist in the clips directory")
-            return
-
-        # Get the output directory from the first captioned video
-        if captioned_videos:
-            output_dir_path = captioned_videos[0].parent
-
-        click.secho(f"\n✓ Caption generation complete!", fg="green", bold=True)
-        click.echo(f"  Captioned videos: {len(captioned_videos)}")
-        click.echo(f"  Output directory: {output_dir_path}")
-
-        if not no_merge:
-            final_video_path = metadata_path.parent / "final_video.mp4"
-            click.secho(f"\n✓ Final merged video:", fg="green", bold=True)
-            click.echo(f"  {final_video_path}")
-
-        # Display captioned video summary
-        click.echo("\n" + "=" * 60)
-        click.echo("CAPTIONED VIDEOS")
-        click.echo("=" * 60)
-
-        for video_path in captioned_videos:
-            click.echo(f"  ✓ {video_path.name}")
-
-        click.echo("\n" + "=" * 60)
-
-    except Exception as e:
-        logging.exception("Error adding captions")
-        click.secho(f"✗ Error: {e}", fg="red", err=True)
-        raise click.Abort()
-
-
-@cli.command()
 @click.argument("pmid")
 @click.argument("output_dir", type=click.Path())
 @click.option(
@@ -528,7 +415,6 @@ def add_captions(metadata_file, clips_dir, output_dir, max_words, font_size, no_
             "generate-script",
             "generate-audio",
             "generate-videos",
-            "add-captions",
         ]
     ),
     help="Stop pipeline after this step",
@@ -564,7 +450,6 @@ def generate_video(
     2. generate-script: Create video script with scenes
     3. generate-audio: Generate TTS audio for each scene
     4. generate-videos: Create video clips with Runway Veo 3.1 Fast
-    5. add-captions: Add burned-in captions to videos
 
     By default, the pipeline is idempotent - it will skip steps that
     have already been completed. Use --no-skip-existing to force

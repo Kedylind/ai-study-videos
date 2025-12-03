@@ -65,7 +65,7 @@ All test scripts in the `tests/` folder executed without errors. The test script
    - Database record updated: ✅
    - Progress: 80%
 
-5. **Test: add-captions step (100% progress - completed)**
+4. **Test: generate-videos step (100% progress - completed)**
    - Paper ID: `TEST_RUN_003` and `TEST_FINAL_TEST`
    - Result: ✅ PASSED
    - Files created:
@@ -204,7 +204,7 @@ To run tests yourself:
 # Test individual steps
 python tests/test_status_updates.py TEST123 --step fetch-paper
 python tests/test_status_updates.py TEST123 --step generate-script
-python tests/test_status_updates.py TEST123 --step add-captions
+python tests/test_status_updates.py TEST123 --step generate-videos
 
 # Test auto-progress
 python tests/test_status_updates.py TEST123 --auto

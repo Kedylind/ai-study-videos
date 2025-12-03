@@ -90,7 +90,7 @@ Returns the current status and progress of the video generation pipeline.
 2. `generate-script` - Generate video script with scenes using Gemini
 3. `generate-audio` - Generate text-to-speech audio for narration
 4. `generate-videos` - Generate video clips using RunwayML Veo 3.1
-5. `add-captions` - Add captions and merge into final video
+(4 steps total - captions step has been removed)
 
 **Example using curl:**
 ```bash

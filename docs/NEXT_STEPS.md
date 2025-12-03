@@ -11,7 +11,7 @@
 Hidden Hill is a Django web application that converts scientific papers into engaging social media videos (TikTok/Instagram Reels format). The system uses AI (Gemini for text/audio, Runway for video) to automatically generate educational content from PubMed papers.
 
 **Current Status:**
-- ✅ Core pipeline fully functional (fetch-paper → generate-script → generate-audio → generate-videos → add-captions)
+- ✅ Core pipeline fully functional (fetch-paper → generate-script → generate-audio → generate-videos)
 - ✅ Web UI and REST API working
 - ✅ User authentication implemented
 - ✅ Celery task queue integrated
@@ -121,95 +121,8 @@ Hidden Hill is a Django web application that converts scientific papers into eng
 
 ---
 
-### 2. 🎯 SPRINT 1: Complete File Upload Feature
-**Status:** UI exists, backend processing incomplete  
-**Priority:** 🎯 **SPRINT 1 CORE FEATURE - 12 Story Points (Research Ingestion)**  
-**Estimated Effort:** 3-4 hours  
-**Sprint 1 Alignment:** Part of Research Ingestion user story
-
-**REQUIREMENT FROM SPRINT 1:**
-> "As a user, I can upload a PDF or provide a URL so that the system can extract key sections."
-
-**Current State:**
-- Upload form exists (`/upload/`)
-- File upload UI is functional
-- **BLOCKER:** When file is uploaded, filename is used as paper ID
-- Pipeline tries to fetch from PubMed using filename as PMID/PMCID
-- Fails immediately: `PMID [filename] is not available in PubMed Central`
-
-**What Needs to be Done:**
-
-1. **Extract Text from Uploaded PDF**
-   - Use PDF parsing library (PyPDF2, pdfplumber, or similar)
-   - Extract full text content
-   - Extract metadata (title, authors, abstract if available)
-
-2. **Convert to Paper Format**
-   - Transform extracted text to `paper.json` format (matching PubMed structure)
-   - Create paper metadata structure
-   - Save to pipeline output directory
-
-3. **Update Pipeline to Handle Local Files**
-   - Detect if input is file upload vs PubMed ID
-   - Skip "fetch-paper" step for file uploads
-   - Use extracted `paper.json` directly
-   - Continue with remaining pipeline steps
-
-4. **Add File Validation**
-   - Check file type (PDF, DOCX)
-   - Enforce size limits (e.g., 50MB max)
-   - Validate file structure
-   - Show user-friendly error messages
-
-**Implementation Steps:**
-
-1. **Add PDF Parsing Library** (`requirements.txt`)
-   ```
-   pdfplumber==0.10.3
-   # or PyPDF2==3.0.1
-   ```
-
-2. **Create PDF Extraction Function** (`web/views.py` or new `web/pdf_extractor.py`)
-   ```python
-   def extract_pdf_content(pdf_file) -> dict:
-       """Extract text and metadata from PDF."""
-       # Parse PDF
-       # Extract text, title, authors
-       # Return paper.json structure
-   ```
-
-3. **Update Upload View** (`web/views.py`)
-   - Save uploaded file temporarily
-   - Extract content using PDF parser
-   - Create `paper.json` in output directory
-   - Generate unique paper ID (UUID or hash)
-   - Start pipeline with extracted content
-
-4. **Update Pipeline Task** (`web/tasks.py`)
-   - Check if `paper.json` already exists (file upload)
-   - Skip fetch-paper step if paper.json exists
-   - Continue with script generation
-
-5. **Add File Validation**
-   - Check file extension
-   - Check file size
-   - Validate PDF structure
-   - Return error if invalid
-
-**Files to Create/Modify:**
-- `requirements.txt` - Add PDF parsing library
-- `web/views.py` - Update `upload_paper()` view
-- `web/tasks.py` - Update pipeline to handle local files
-- `web/pdf_extractor.py` - Create PDF extraction utility (new file)
-
-**Testing Checklist:**
-- [ ] User can upload PDF file
-- [ ] PDF text is extracted correctly
-- [ ] Paper.json is created with correct structure
-- [ ] Pipeline skips fetch-paper step for file uploads
-- [ ] Video generation works with uploaded files
-- [ ] File validation works (size, type, structure)
-- [ ] Error messages are user-friendly
+### 2. 🎯 File Upload Feature (REMOVED)
+**Status:** Feature removed - only PubMed ID/PMCID input is supported
 
 ---
 

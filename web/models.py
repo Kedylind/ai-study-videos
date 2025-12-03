@@ -18,6 +18,7 @@ class VideoGenerationJob(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     progress_percent = models.IntegerField(default=0)
     current_step = models.CharField(max_length=100, null=True, blank=True)
+    progress_updated_at = models.DateTimeField(null=True, blank=True)  # Timestamp of last progress update
     error_message = models.TextField(blank=True)
     error_type = models.CharField(max_length=50, blank=True)
     task_id = models.CharField(max_length=255, unique=True)  # Celery task ID

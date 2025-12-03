@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$PaperId,
     
-    [ValidateSet("fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions")]
+    [ValidateSet("fetch-paper", "generate-script", "generate-audio", "generate-videos")]
     [string]$Step,
     
     [switch]$Auto,

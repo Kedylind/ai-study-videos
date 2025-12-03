@@ -84,7 +84,7 @@ The simulation creates the same files and database records as a real pipeline:
 2. **generate-script** (40%) - Creates `script.json`
 3. **generate-audio** (60%) - Creates `audio.wav`, `audio_metadata.json`
 4. **generate-videos** (80%) - Creates `clips/.videos_complete`, `clips/video_metadata.json`
-5. **add-captions** (100%) - Creates `final_video.mp4` (dummy file)
+(4 steps total - final video is created by generate-videos step)
 
 ## Differences from Real Pipeline
 
