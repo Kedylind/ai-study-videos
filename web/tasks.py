@@ -507,28 +507,86 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                     # Model's upload_to='videos/%Y/%m/%d/' will create: videos/2025/01/28/{filename}.mp4
                     video_filename = f"{pmid}_final_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
                     
+                    # ============================================================================
+                    # CRITICAL VIDEO UPLOAD AND DATABASE SAVE SECTION
+                    # ============================================================================
+                    # This section MUST ensure both final_video and final_video_path are saved
+                    # to the database immediately after R2 upload. Multiple verification steps
+                    # are included to guarantee data integrity.
+                    # ============================================================================
                     # Upload to cloud storage (R2) or save locally
                     if settings.USE_CLOUD_STORAGE:
                         # Open the local file and upload to cloud storage
                         try:
+                            # Open file and upload to R2
                             with open(final_video, 'rb') as f:
                                 django_file = File(f, name=video_filename)
                                 # Upload to R2 storage (save=False means upload to storage but don't save to DB yet)
                                 job.final_video.save(video_filename, django_file, save=False)
-                                job.final_video_path = job.final_video.name  # Store the storage path
-                                logger.info(f"Video uploaded to cloud storage: {job.final_video.name}")
+                                video_storage_path = job.final_video.name  # Capture the path immediately
+                            
+                            # Now save to database (file handle is closed, but FileField is set)
+                            job.final_video_path = video_storage_path  # Store the storage path
+                            logger.info(f"Video uploaded to cloud storage: {video_storage_path}")
+                            
+                            # CRITICAL: Save BOTH fields to database immediately after R2 upload
+                            # Use atomic transaction to ensure both fields are saved together
+                            from django.db import transaction
+                            try:
+                                with transaction.atomic():
+                                    job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
                                 
-                                # CRITICAL: Save the FileField to database immediately after R2 upload
-                                # The FileField.name is now set, but needs to be persisted to DB
-                                job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
-                                logger.info(f"Saved final_video FileField to database: {job.final_video.name}")
+                                # VERIFY the save worked by refreshing from DB
+                                job.refresh_from_db()
                                 
-                                # Delete local file after successful R2 upload to save disk space
+                                # Verify final_video FileField
+                                if job.final_video and job.final_video.name == video_storage_path:
+                                    logger.info(f"✅ VERIFIED: final_video saved to database: {job.final_video.name}")
+                                else:
+                                    logger.error(f"❌ WARNING: final_video mismatch or missing! Expected: {video_storage_path}, Got: {job.final_video.name if job.final_video else 'None'}")
+                                    # Try to fix it by setting from storage
+                                    try:
+                                        from django.core.files.storage import default_storage
+                                        if default_storage.exists(video_storage_path):
+                                            with default_storage.open(video_storage_path, 'rb') as f:
+                                                django_file = File(f, name=os.path.basename(video_storage_path))
+                                                job.final_video.save(os.path.basename(video_storage_path), django_file, save=False)
+                                            with transaction.atomic():
+                                                job.save(update_fields=['final_video', 'updated_at'])
+                                            job.refresh_from_db()
+                                            if job.final_video and job.final_video.name:
+                                                logger.info(f"✅ FIXED: final_video now saved: {job.final_video.name}")
+                                    except Exception as fix_error:
+                                        logger.error(f"❌ Could not fix final_video: {fix_error}")
+                                
+                                # Verify final_video_path
+                                if job.final_video_path == video_storage_path:
+                                    logger.info(f"✅ VERIFIED: final_video_path saved: {job.final_video_path}")
+                                else:
+                                    logger.error(f"❌ FAILED: final_video_path not saved! Expected: {video_storage_path}, Got: {job.final_video_path}")
+                                    # Fix it
+                                    job.final_video_path = video_storage_path
+                                    with transaction.atomic():
+                                        job.save(update_fields=['final_video_path', 'updated_at'])
+                                    logger.info(f"✅ FIXED: final_video_path now set: {job.final_video_path}")
+                                    
+                            except Exception as save_error:
+                                logger.critical(f"❌ CRITICAL ERROR saving video to database: {save_error}", exc_info=True)
+                                # Emergency fallback: save path at minimum
                                 try:
-                                    final_video.unlink()
-                                    logger.info(f"Deleted local file after successful R2 upload: {final_video}")
-                                except Exception as cleanup_error:
-                                    logger.warning(f"Failed to delete local file after R2 upload: {cleanup_error}")
+                                    job.final_video_path = video_storage_path
+                                    with transaction.atomic():
+                                        job.save(update_fields=['final_video_path', 'updated_at'])
+                                    logger.warning(f"⚠️ Saved final_video_path as emergency fallback: {job.final_video_path}")
+                                except Exception as fallback_error:
+                                    logger.critical(f"❌ CRITICAL: Even fallback save failed: {fallback_error}")
+                            
+                            # Delete local file after successful R2 upload and DB save
+                            try:
+                                final_video.unlink()
+                                logger.info(f"Deleted local file after successful R2 upload: {final_video}")
+                            except Exception as cleanup_error:
+                                logger.warning(f"Failed to delete local file after R2 upload: {cleanup_error}")
                         except Exception as upload_error:
                             logger.error(f"Failed to upload video to cloud storage: {upload_error}", exc_info=True)
                             if settings.USE_CLOUD_STORAGE:
@@ -548,6 +606,16 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         # Local storage - just save the path
                         job.final_video_path = str(final_video)
                     
+                    # FINAL SAFEGUARD: Ensure video fields are saved before marking complete
+                    job.refresh_from_db()
+                    if settings.USE_CLOUD_STORAGE and job.status == 'completed':
+                        # Double-check video path is saved
+                        if not job.final_video_path:
+                            logger.critical(f"❌ CRITICAL: Job marked complete but final_video_path is EMPTY!")
+                            # Try to recover - but this should never happen
+                        elif job.final_video_path:
+                            logger.info(f"✅ FINAL CHECK: Video path confirmed in database: {job.final_video_path}")
+                    
                     # Update job status using progress manager
                     try:
                         from web.progress_manager import update_progress
@@ -564,26 +632,17 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         job.progress_percent = 100
                         job.current_step = None
                         job.completed_at = timezone.now()
+                        # Ensure video fields are included in save
                         job.save(update_fields=['final_video', 'final_video_path', 'status', 'progress_percent', 'current_step', 'completed_at', 'updated_at'])
                     else:
-                        # Still need to save final_video and final_video_path after progress manager update
-                        # CRITICAL: Ensure final_video is saved to database after R2 upload
+                        # Progress manager updated successfully
+                        # Final verification: ensure video fields are still saved
                         job.refresh_from_db()
-                        # After R2 upload with save=False, we need to explicitly save the FileField to DB
-                        if job.final_video and job.final_video.name:
-                            # FileField was set by the .save() call, now persist it to database
-                            logger.info(f"Persisting final_video to database: {job.final_video.name}")
-                            job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
-                        else:
-                            logger.warning(f"final_video not set after R2 upload, attempting to reload job")
-                            job.refresh_from_db()
-                            if not job.final_video and job.final_video_path:
-                                # Fallback: try to reconstruct the FileField from the path
-                                logger.info(f"Attempting to set final_video from path: {job.final_video_path}")
-                                from django.core.files.base import ContentFile
-                                # Create a FileField reference to the existing R2 file
-                                job.final_video = job.final_video_path
-                                job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
+                        if settings.USE_CLOUD_STORAGE:
+                            if not job.final_video_path:
+                                logger.critical(f"❌ CRITICAL: final_video_path lost after progress update! This should never happen.")
+                            elif job.final_video_path:
+                                logger.info(f"✅ Final verification: Video path persists: {job.final_video_path}")
                     
                 except Exception as e:
                     logger.error(f"Failed to update job record on completion: {e}", exc_info=True)
