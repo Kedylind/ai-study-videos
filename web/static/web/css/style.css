@@ -39,7 +39,7 @@ body {
     padding-top: 70px;
 }
 
-/* Fixed Site Header - Identical across all pages */
+/* UNIFIED HEADER STYLES - Identical across all pages */
 .site-header {
     position: fixed !important;
     top: 0 !important;
@@ -55,6 +55,7 @@ body {
     padding: 0 !important;
 }
 
+.site-header .header-container,
 .header-container {
     max-width: 1400px !important;
     margin: 0 auto !important;
@@ -63,48 +64,55 @@ body {
     justify-content: space-between !important;
     align-items: center !important;
     height: 70px !important;
-    position: relative;
+    position: relative !important;
     box-sizing: border-box !important;
 }
 
+.site-header .header-logo,
 .header-logo {
     font-size: 28px !important;
     font-weight: 800 !important;
     margin: 0 !important;
     padding: 0 !important;
-    position: relative;
-    z-index: 1;
+    position: relative !important;
+    z-index: 1 !important;
     letter-spacing: -0.5px !important;
     color: #ffffff !important;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif !important;
     line-height: 1 !important;
 }
 
+.site-header .header-logo-link,
 .header-logo-link {
     color: #ffffff !important;
     text-decoration: none !important;
-    transition: all 0.3s ease;
-    display: inline-block;
+    transition: all 0.3s ease !important;
+    display: inline-block !important;
     font-weight: 800 !important;
 }
 
+.site-header .header-logo-link:hover,
 .header-logo-link:hover {
-    opacity: 0.9;
-    transform: translateY(-1px);
+    opacity: 0.9 !important;
+    transform: translateY(-1px) !important;
 }
 
+.site-header .header-nav,
 .header-nav {
     display: flex !important;
     gap: 12px !important;
-    flex-wrap: wrap;
+    flex-wrap: wrap !important;
     align-items: center !important;
-    position: relative;
-    z-index: 1;
+    position: relative !important;
+    z-index: 1 !important;
     margin: 0 !important;
     padding: 0 !important;
 }
 
-.nav-link, .nav-button {
+.site-header .nav-link,
+.site-header .nav-button,
+.nav-link,
+.nav-button {
     color: #ffffff !important;
     text-decoration: none !important;
     font-size: 14px !important;
@@ -113,39 +121,46 @@ body {
     background: rgba(255, 255, 255, 0.12) !important;
     border: 1px solid rgba(255, 255, 255, 0.2) !important;
     border-radius: 8px !important;
-    cursor: pointer;
-    font-family: inherit;
-    display: inline-flex;
-    align-items: center;
-    transition: all 0.3s ease;
-    white-space: nowrap;
+    cursor: pointer !important;
+    font-family: inherit !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    transition: all 0.3s ease !important;
+    white-space: nowrap !important;
     margin: 0 !important;
 }
 
-.nav-link:hover, .nav-button:hover {
+.site-header .nav-link:hover,
+.site-header .nav-button:hover,
+.nav-link:hover,
+.nav-button:hover {
     background: rgba(255, 255, 255, 0.25) !important;
     border-color: rgba(255, 255, 255, 0.35) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transform: translateY(-2px) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
 }
 
+.site-header .nav-link-primary,
 .nav-link-primary {
     background: rgba(255, 255, 255, 0.25) !important;
     border-color: rgba(255, 255, 255, 0.35) !important;
     font-weight: 700 !important;
 }
 
+.site-header .nav-link-primary:hover,
 .nav-link-primary:hover {
     background: rgba(255, 255, 255, 0.35) !important;
     border-color: rgba(255, 255, 255, 0.45) !important;
 }
 
+.site-header .nav-form,
 .nav-form {
     display: inline !important;
     margin: 0 !important;
     padding: 0 !important;
 }
 
+.site-header .nav-welcome,
 .nav-welcome {
     background: none !important;
     border: none !important;
@@ -156,6 +171,7 @@ body {
     margin: 0 !important;
 }
 
+.site-header .nav-welcome strong,
 .nav-welcome strong {
     color: #ffffff !important;
     font-weight: 700 !important;

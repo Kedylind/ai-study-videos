@@ -43,13 +43,27 @@ def fetch_paper_if_needed(pmid: str, output_dir: str) -> None:
     
     This allows the pipeline to work with pre-created paper.json files
     (e.g., from file uploads).
+    
+    Args:
+        pmid: Paper ID (PMID, PMCID, or UPLOAD_* for uploaded files)
+        output_dir: Output directory path
     """
     paper_json = Path(output_dir) / "paper.json"
+    
+    # Check if paper.json already exists
     if paper_json.exists():
         logger.info(f"paper.json already exists in {output_dir}, skipping fetch-paper step")
         return
     
-    # Paper.json doesn't exist, fetch from PubMed
+    # If paper ID starts with "UPLOAD_", this is an uploaded file
+    # Don't try to fetch from PubMed - paper.json should have been created during upload
+    if pmid.upper().startswith("UPLOAD_"):
+        raise PipelineError(
+            f"paper.json not found for uploaded file {pmid}. "
+            "The PDF extraction may have failed. Please check the upload and try again."
+        )
+    
+    # Paper.json doesn't exist and it's not an uploaded file, fetch from PubMed
     fetch_paper(pmid, output_dir)
 
 

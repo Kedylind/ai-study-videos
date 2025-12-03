@@ -1254,6 +1254,10 @@ def upload_paper(request):
                         with open(paper_json_path, "w", encoding="utf-8") as f:
                             json.dump(paper_data, f, indent=2, ensure_ascii=False)
                         
+                        # Verify paper.json was created successfully
+                        if not paper_json_path.exists():
+                            raise ValueError("Failed to create paper.json file")
+                        
                         logger.info(f"Extracted PDF content and created paper.json for {paper_id}")
                         pmid = paper_id  # Use generated ID
                         

@@ -22,34 +22,36 @@
     box-sizing: border-box;
 }
 
-html, body {
-    height: 100%;
+html {
     width: 100%;
     margin: 0;
     padding: 0;
-    overflow-x: hidden;
+    overflow-x: hidden !important;
+    overflow-y: auto;
 }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     min-height: 100vh;
     color: var(--text-dark);
-    display: flex;
-    flex-direction: column;
     margin: 0;
     padding: 0;
-    overflow-x: hidden;
+    padding-top: 70px !important;
+    overflow-x: hidden !important;
+    overflow: visible;
+    width: 100%;
+    box-sizing: border-box;
+    position: relative;
 }
 
 .upload-wrapper {
-    min-height: 100vh;
+    min-height: calc(100vh - 70px);
     display: flex;
     flex-direction: column;
     position: relative;
-    overflow-x: hidden;
-    overflow-y: auto;
-    margin-top: 70px;
-    padding-top: 0;
+    overflow: visible;
+    margin: 0;
+    padding: 0;
     width: 100%;
 }
 
@@ -60,9 +62,10 @@ body {
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: -1;
+    z-index: -2;
     background: linear-gradient(135deg, #0f1419 0%, #1e3a5f 40%, #2d5a8c 70%, #e8f0f7 100%);
     background-attachment: fixed;
+    overflow: hidden;
 }
 
 .gradient-orb {
@@ -109,7 +112,7 @@ body {
     }
 }
 
-/* Fixed Site Header - Identical across all pages */
+/* UNIFIED HEADER STYLES - Identical across all pages */
 .site-header {
     position: fixed !important;
     top: 0 !important;
@@ -134,7 +137,7 @@ body {
     justify-content: space-between !important;
     align-items: center !important;
     height: 70px !important;
-    position: relative;
+    position: relative !important;
     box-sizing: border-box !important;
 }
 
@@ -144,8 +147,8 @@ body {
     font-weight: 800 !important;
     margin: 0 !important;
     padding: 0 !important;
-    position: relative;
-    z-index: 1;
+    position: relative !important;
+    z-index: 1 !important;
     letter-spacing: -0.5px !important;
     color: #ffffff !important;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif !important;
@@ -156,32 +159,32 @@ body {
 .header-logo-link {
     color: #ffffff !important;
     text-decoration: none !important;
-    transition: all 0.3s ease;
-    display: inline-block;
+    transition: all 0.3s ease !important;
+    display: inline-block !important;
     font-weight: 800 !important;
 }
 
 .site-header .header-logo-link:hover,
 .header-logo-link:hover {
-    opacity: 0.9;
-    transform: translateY(-1px);
+    opacity: 0.9 !important;
+    transform: translateY(-1px) !important;
 }
 
 .site-header .header-nav,
 .header-nav {
     display: flex !important;
     gap: 12px !important;
-    flex-wrap: wrap;
+    flex-wrap: wrap !important;
     align-items: center !important;
-    position: relative;
-    z-index: 1;
+    position: relative !important;
+    z-index: 1 !important;
     margin: 0 !important;
     padding: 0 !important;
 }
 
-.site-header .nav-link, 
+.site-header .nav-link,
 .site-header .nav-button,
-.nav-link, 
+.nav-link,
 .nav-button {
     color: #ffffff !important;
     text-decoration: none !important;
@@ -191,23 +194,23 @@ body {
     background: rgba(255, 255, 255, 0.12) !important;
     border: 1px solid rgba(255, 255, 255, 0.2) !important;
     border-radius: 8px !important;
-    cursor: pointer;
-    font-family: inherit;
-    display: inline-flex;
-    align-items: center;
-    transition: all 0.3s ease;
-    white-space: nowrap;
+    cursor: pointer !important;
+    font-family: inherit !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    transition: all 0.3s ease !important;
+    white-space: nowrap !important;
     margin: 0 !important;
 }
 
-.site-header .nav-link:hover, 
+.site-header .nav-link:hover,
 .site-header .nav-button:hover,
-.nav-link:hover, 
+.nav-link:hover,
 .nav-button:hover {
     background: rgba(255, 255, 255, 0.25) !important;
     border-color: rgba(255, 255, 255, 0.35) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transform: translateY(-2px) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
 }
 
 .site-header .nav-link-primary,
@@ -256,8 +259,9 @@ main {
     padding: 60px 40px;
     position: relative;
     z-index: 1;
-    overflow-x: hidden;
+    overflow: visible;
     width: 100%;
+    max-width: 100%;
     box-sizing: border-box;
 }
 
@@ -273,7 +277,7 @@ main {
     animation: slideUp 0.8s ease-out;
     border: 1px solid rgba(255, 255, 255, 0.2);
     box-sizing: border-box;
-    overflow-x: hidden;
+    overflow: visible;
 }
 
 @keyframes slideUp {
@@ -322,6 +326,7 @@ main {
 .form-group input[type="password"],
 .form-group input[type="file"] {
     width: 100%;
+    max-width: 100%;
     padding: 16px 18px;
     border: 2px solid #e5e7eb;
     border-radius: 12px;
@@ -331,7 +336,6 @@ main {
     background: var(--white);
     color: var(--text-dark);
     box-sizing: border-box;
-    max-width: 100%;
 }
 
 .form-group input[type="text"]:focus,
