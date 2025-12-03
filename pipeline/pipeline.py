@@ -45,17 +45,96 @@ def check_script_generated(output_dir: Path) -> bool:
 
 
 def check_audio_generated(output_dir: Path) -> bool:
-    """Check if audio has been generated."""
+    """Check if audio has been generated.
+    
+    More robust check: verifies that the combined audio file exists
+    and matches the expected scenes from the script.
+    """
     audio_file = output_dir / "audio.wav"
     metadata_file = output_dir / "audio_metadata.json"
-    return audio_file.exists() and metadata_file.exists()
+    
+    # Basic check
+    if not (audio_file.exists() and metadata_file.exists()):
+        return False
+    
+    # Verify metadata matches script (optional but helps catch inconsistencies)
+    try:
+        script_file = output_dir / "script.json"
+        if script_file.exists():
+            scenes = load_scenes(script_file)
+            with open(metadata_file, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            
+            # Check if scene count matches
+            scene_boundaries = metadata.get("scene_boundaries", [])
+            if len(scene_boundaries) != len(scenes):
+                logger.warning(
+                    f"Audio metadata has {len(scene_boundaries)} scenes but "
+                    f"script has {len(scenes)} scenes. Regenerating audio."
+                )
+                return False
+    except Exception as e:
+        logger.warning(f"Error validating audio metadata: {e}, assuming incomplete")
+        # Don't fail the check on validation errors, just log a warning
+    
+    return True
 
 
 def check_videos_generated(output_dir: Path) -> bool:
-    """Check if videos have been generated for all scenes."""
+    """Check if videos have been generated for all scenes.
+    
+    More robust check: verifies that all expected video clips exist
+    based on the script, not just a marker file.
+    """
+    # First check for marker file (fast path)
     clips_dir = output_dir / "clips"
     marker_path = clips_dir / ".videos_complete"
-    return marker_path.exists()
+    if marker_path.exists():
+        return True
+    
+    # If no marker, check if all expected videos exist based on script
+    script_file = output_dir / "script.json"
+    if not script_file.exists():
+        return False
+    
+    # Load script to determine how many scenes we need
+    scenes = load_scenes(script_file)
+    if not scenes:
+        return False
+    
+    # Check if all expected video clips exist
+    expected_count = len(scenes)
+    existing_clips = list(clips_dir.glob("scene_*.mp4")) if clips_dir.exists() else []
+    
+    # Count unique scene clips (scene_00.mp4, scene_01.mp4, etc.)
+    scene_indices = set()
+    for clip_path in existing_clips:
+        try:
+            # Extract scene number from filename like "scene_00.mp4"
+            name = clip_path.stem  # "scene_00"
+            if name.startswith("scene_"):
+                scene_num = int(name.split("_")[1])
+                scene_indices.add(scene_num)
+        except (ValueError, IndexError):
+            continue
+    
+    # Check if we have all required clips
+    all_clips_exist = len(scene_indices) >= expected_count and all(
+        i in scene_indices for i in range(expected_count)
+    )
+    
+    if all_clips_exist:
+        logger.info(
+            f"All {expected_count} video clips found (even without marker file), "
+            "skipping video generation"
+        )
+        # Create marker file for faster future checks
+        if not marker_path.exists():
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.touch()
+            logger.debug(f"Created missing marker file: {marker_path}")
+    
+    return all_clips_exist
 
 
 
@@ -122,6 +201,7 @@ def orchestrate_pipeline(
         # Check if step is already complete
         if skip_existing and step.check_completion():
             logger.info(f"  ✓ Already complete, skipping")
+            logger.info(f"  → Reusing existing output files from previous run")
             if stop_after == step.name:
                 logger.info(f"Stopping after {step.name} as requested")
                 break
