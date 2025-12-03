@@ -239,11 +239,11 @@ def concatenate_videos(
                 "-i",
                 str(audio_path),  # Audio input (our generated TTS audio)
                 "-map",
-                "0:v",  # Use video from first input (includes burned captions)
+                "0:v",  # Use video from first input
                 "-map",
                 "1:a",  # Use audio from second input (our TTS audio)
                 "-c:v",
-                "copy",  # Copy video codec (no re-encoding, preserves burned captions)
+                "copy",  # Copy video codec (no re-encoding)
                 "-c:a",
                 "aac",  # Encode audio to AAC
                 "-shortest",  # Stop at shortest stream (in case audio/video mismatch)

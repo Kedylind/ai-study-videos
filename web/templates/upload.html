@@ -75,7 +75,7 @@
                 {% endif %}
 
                 <!-- Form -->
-                <form method="post" enctype="multipart/form-data" autocomplete="off" data-form-type="other">
+                <form method="post" autocomplete="off" data-form-type="other">
                     {% csrf_token %}
                     
                     <!-- Hidden dummy fields to trick password managers -->
@@ -92,33 +92,6 @@
                         {% if form.paper_id.errors %}
                             <div class="alert alert-error">
                                 {% for error in form.paper_id.errors %}
-                                    {{ error }}
-                                {% endfor %}
-                            </div>
-                        {% endif %}
-                    </div>
-
-                    <!-- Divider -->
-                    <div class="form-divider">
-                        <span>OR</span>
-                    </div>
-
-                    <!-- File Upload -->
-                    <div class="form-group">
-                        <label for="{{ form.file.id_for_label }}">{{ form.file.label }}</label>
-                        <div class="file-upload-area">
-                            <span class="upload-icon">📄</span>
-                            <p>Drag & drop your PDF here</p>
-                            <small>or click to browse</small>
-                            {{ form.file }}
-                        </div>
-                        <div class="file-name"></div>
-                        {% if form.file.help_text %}
-                            <p class="help-text">{{ form.file.help_text|safe }}</p>
-                        {% endif %}
-                        {% if form.file.errors %}
-                            <div class="alert alert-error">
-                                {% for error in form.file.errors %}
                                     {{ error }}
                                 {% endfor %}
                             </div>
@@ -160,8 +133,7 @@
                 <!-- Info Box -->
                 <div style="margin-top: 40px; padding: 20px; background: rgba(232, 240, 247, 0.5); border-radius: 12px; border-left: 4px solid #4a7ba7;">
                     <p style="color: #1e3a5f; font-size: 14px; line-height: 1.6; margin: 0;">
-                        <strong>💡 Tip:</strong> You can provide either a PubMed ID (e.g., 12345678) to automatically fetch the paper, 
-                        or upload a PDF file directly. Both options will generate an AI powered video of your research.
+                        <strong>💡 Tip:</strong> Enter a PubMed ID (e.g., 12345678) or PMCID (e.g., PMC10979640) to automatically fetch the paper and generate an AI powered video of your research.
                     </p>
                 </div>
             </div>

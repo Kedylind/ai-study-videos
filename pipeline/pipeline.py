@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from audio import generate_audio, save_audio_metadata
-from captions import add_captions_to_all_scenes
 from pubmed import fetch_paper
 from scenes import generate_scenes, save_scenes, load_scenes
 from video import generate_videos, save_video_metadata
@@ -37,84 +36,6 @@ def check_paper_fetched(output_dir: Path) -> bool:
     return paper_json.exists()
 
 
-def fetch_paper_if_needed(pmid: str, output_dir: str) -> None:
-    """
-    Fetch paper from PubMed Central only if paper.json doesn't exist.
-    
-    This allows the pipeline to work with pre-created paper.json files
-    (e.g., from file uploads).
-    
-    Args:
-        pmid: Paper ID (PMID, PMCID, or UPLOAD_* for uploaded files)
-        output_dir: Output directory path
-    """
-    paper_json = Path(output_dir) / "paper.json"
-    
-    # Check if paper.json already exists
-    if paper_json.exists():
-        logger.info(f"paper.json already exists in {output_dir}, skipping fetch-paper step")
-        return
-    
-    # If paper ID starts with "UPLOAD_", this is an uploaded file
-    # Try to recreate paper.json from the PDF file if it exists
-    if pmid.upper().startswith("UPLOAD_"):
-        output_path = Path(output_dir)
-        
-        # Look for PDF files in the output directory
-        pdf_files = list(output_path.glob("*.pdf"))
-        
-        if not pdf_files:
-            raise PipelineError(
-                f"paper.json not found for uploaded file {pmid}, and no PDF file found in {output_dir}. "
-                "The PDF extraction may have failed. Please check the upload and try again."
-            )
-        
-        # Use the first PDF file found (there should only be one)
-        pdf_file = pdf_files[0]
-        logger.info(f"paper.json not found for uploaded file {pmid}, attempting to recreate from PDF: {pdf_file}")
-        
-        try:
-            # Import PDF extraction function
-            # Try multiple import strategies since pipeline runs as subprocess
-            import sys
-            from pathlib import Path as PathLib
-            
-            # Strategy 1: Try importing directly (if web is in PYTHONPATH)
-            try:
-                from web.pdf_extractor import extract_pdf_content
-            except ImportError:
-                # Strategy 2: Add web directory to path and import
-                web_dir = PathLib(__file__).parent.parent / "web"
-                if web_dir.exists() and str(web_dir) not in sys.path:
-                    sys.path.insert(0, str(web_dir))
-                from pdf_extractor import extract_pdf_content
-            
-            # Extract PDF content and create paper.json
-            paper_data = extract_pdf_content(pdf_file, filename=pdf_file.name)
-            
-            # Save to paper.json
-            with open(paper_json, "w", encoding="utf-8") as f:
-                json.dump(paper_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Successfully recreated paper.json from PDF for {pmid}")
-            
-        except ImportError as e:
-            logger.error(f"Failed to import pdf_extractor: {e}")
-            raise PipelineError(
-                f"paper.json not found for uploaded file {pmid} and could not import PDF extraction module. "
-                "The PDF extraction may have failed. Please check the upload and try again."
-            )
-        except Exception as e:
-            logger.error(f"Failed to recreate paper.json from PDF: {e}", exc_info=True)
-            raise PipelineError(
-                f"paper.json not found for uploaded file {pmid} and failed to recreate it from PDF: {str(e)}. "
-                "The PDF extraction may have failed. Please check the upload and try again."
-            )
-        
-        return
-    
-    # Paper.json doesn't exist and it's not an uploaded file, fetch from PubMed
-    fetch_paper(pmid, output_dir)
 
 
 def check_script_generated(output_dir: Path) -> bool:
@@ -137,11 +58,6 @@ def check_videos_generated(output_dir: Path) -> bool:
     return marker_path.exists()
 
 
-def check_captions_added(output_dir: Path) -> bool:
-    """Check if captions have been added to all videos."""
-    clips_captioned_dir = output_dir / "clips_captioned"
-    marker_path = clips_captioned_dir / ".captions_complete"
-    return marker_path.exists()
 
 
 def orchestrate_pipeline(
@@ -175,7 +91,7 @@ def orchestrate_pipeline(
             name="fetch-paper",
             description=f"Fetching paper {pmid} from PubMed Central",
             check_completion=lambda: check_paper_fetched(output_dir),
-            execute=lambda: fetch_paper_if_needed(pmid, str(output_dir)),
+            execute=lambda: fetch_paper(pmid, str(output_dir)),
         ),
         PipelineStep(
             name="generate-script",
@@ -194,12 +110,6 @@ def orchestrate_pipeline(
             description="Generating videos for all scenes",
             check_completion=lambda: check_videos_generated(output_dir),
             execute=lambda: _generate_videos_step(output_dir, max_workers, merge),
-        ),
-        PipelineStep(
-            name="add-captions",
-            description="Adding captions to all videos",
-            check_completion=lambda: check_captions_added(output_dir),
-            execute=lambda: _add_captions_step(output_dir, merge=merge),
         ),
     ]
 
@@ -270,23 +180,19 @@ def _generate_audio_step(output_dir: Path, voice: str) -> None:
 
 
 def _generate_videos_step(
-    output_dir: Path, max_workers: int, merge: bool = False
+    output_dir: Path, max_workers: int, merge: bool = True
 ) -> None:
-    """Execute the generate-videos step.
-
-    Note: The merge parameter is kept for API compatibility but merging now happens
-    after captions are added in the _add_captions_step.
-    """
+    """Execute the generate-videos step."""
     # Load audio metadata
     metadata_path = output_dir / "audio_metadata.json"
 
-    # Generate videos (merge=False since we'll merge after captions)
+    # Generate videos with merging
     result = generate_videos(
         metadata_path,
         output_dir=None,
         max_workers=max_workers,
         poll_interval=1,
-        merge=False,
+        merge=merge,
     )
 
     # Save video metadata
@@ -294,23 +200,5 @@ def _generate_videos_step(
     save_video_metadata(result, video_metadata_file)
 
     logger.info(f"Generated {result.total_clips} video clips")
-
-
-def _add_captions_step(output_dir: Path, merge: bool = True) -> None:
-    """Execute the add-captions step."""
-    # Load audio metadata
-    metadata_path = output_dir / "audio_metadata.json"
-
-    # Add captions to all scenes
-    captioned_videos = add_captions_to_all_scenes(
-        metadata_path,
-        clips_dir=None,
-        output_dir=None,
-        max_words=2,
-        font_size=24,
-        merge=merge,
-    )
-
-    logger.info(f"Added captions to {len(captioned_videos)} videos")
     if merge:
         logger.info(f"Final merged video created")

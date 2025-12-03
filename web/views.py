@@ -21,7 +21,6 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
 from .tasks import generate_video_task, get_task_status, update_job_progress_from_files, test_r2_storage_write_task
-from .pdf_extractor import extract_pdf_content, validate_pdf, generate_paper_id
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -1188,7 +1187,7 @@ def _start_pipeline_async(pmid: str, output_dir: Path, user_id: Optional[int] = 
 def upload_paper(request):
     """Simple UI to accept a PubMed ID/PMCID and start the pipeline."""
     if request.method == "POST":
-        form = PaperUploadForm(request.POST, request.FILES)
+        form = PaperUploadForm(request.POST)
         if form.is_valid():
             # Validate access code
             access_code = form.cleaned_data.get("access_code", "")
@@ -1202,114 +1201,24 @@ def upload_paper(request):
                 return render(request, "upload.html", {"form": form})
             
             pmid = form.cleaned_data.get("paper_id")
-            # If a file is uploaded we save it and use a folder named by filename
-            uploaded = form.cleaned_data.get("file")
+            
+            if not pmid:
+                form.add_error("paper_id", "Please provide a PubMed ID or PMCID")
+                return render(request, "upload.html", {"form": form})
 
-            if uploaded:
-                # Validate file extension
-                if not uploaded.name.lower().endswith('.pdf'):
-                    form.add_error("file", "Only PDF files are supported.")
-                    return render(request, "upload.html", {"form": form})
-                
-                # Validate file size (50MB max)
-                max_size = 50 * 1024 * 1024  # 50MB
-                if uploaded.size > max_size:
-                    size_mb = uploaded.size / (1024 * 1024)
-                    form.add_error("file", f"File size ({size_mb:.1f}MB) exceeds maximum allowed size (50MB)")
-                    return render(request, "upload.html", {"form": form})
-                
-                # Generate unique paper ID
-                paper_id = generate_paper_id(uploaded.name, use_hash=False)
-                
-                # Save uploaded file
-                out_dir = Path(settings.MEDIA_ROOT) / paper_id
-                out_dir.mkdir(parents=True, exist_ok=True)
-                file_path = out_dir / uploaded.name
-                
-                try:
-                    with open(file_path, "wb") as f:
-                        for chunk in uploaded.chunks():
-                            f.write(chunk)
-                    
-                    logger.info(f"Saved uploaded file to {file_path}")
-                    
-                    # Validate PDF structure
-                    is_valid, error_msg = validate_pdf(file_path)
-                    if not is_valid:
-                        form.add_error("file", error_msg)
-                        # Clean up saved file
-                        try:
-                            file_path.unlink()
-                            out_dir.rmdir()
-                        except:
-                            pass
-                        return render(request, "upload.html", {"form": form})
-                    
-                    # Extract PDF content and create paper.json
-                    try:
-                        paper_data = extract_pdf_content(file_path, filename=uploaded.name)
-                        paper_json_path = out_dir / "paper.json"
-                        
-                        import json
-                        with open(paper_json_path, "w", encoding="utf-8") as f:
-                            json.dump(paper_data, f, indent=2, ensure_ascii=False)
-                        
-                        # Verify paper.json was created successfully
-                        if not paper_json_path.exists():
-                            raise ValueError("Failed to create paper.json file")
-                        
-                        logger.info(f"Extracted PDF content and created paper.json for {paper_id}")
-                        pmid = paper_id  # Use generated ID
-                        
-                    except ValueError as e:
-                        # User-friendly error (validation, extraction issues)
-                        logger.error(f"PDF extraction failed: {e}")
-                        form.add_error("file", f"Failed to extract content from PDF: {str(e)}")
-                        # Clean up
-                        try:
-                            file_path.unlink()
-                            if (out_dir / "paper.json").exists():
-                                (out_dir / "paper.json").unlink()
-                            out_dir.rmdir()
-                        except:
-                            pass
-                        return render(request, "upload.html", {"form": form})
-                    except Exception as e:
-                        # Unexpected error
-                        logger.error(f"Unexpected error during PDF extraction: {e}", exc_info=True)
-                        form.add_error("file", "An unexpected error occurred while processing the PDF. Please try again or contact support.")
-                        # Clean up
-                        try:
-                            file_path.unlink()
-                            if (out_dir / "paper.json").exists():
-                                (out_dir / "paper.json").unlink()
-                            out_dir.rmdir()
-                        except:
-                            pass
-                        return render(request, "upload.html", {"form": form})
-                        
-                except Exception as e:
-                    logger.error(f"Failed to save uploaded file: {e}", exc_info=True)
-                    form.add_error("file", f"Failed to save uploaded file: {str(e)}")
-                    return render(request, "upload.html", {"form": form})
+            # Normalize pmid
+            pmid = pmid.strip()
+            
+            # Skip validation for test IDs in simulation mode (e.g., TEST123, TEST456)
+            # This allows testing the upload flow without validating against PubMed
+            if settings.SIMULATION_MODE and pmid.upper().startswith("TEST"):
+                logger.info(f"Simulation mode: Skipping paper ID validation for test ID: {pmid}")
             else:
-                if not pmid:
-                    form.add_error(None, "Provide a PubMed ID or upload a file")
+                # Validate paper ID before starting pipeline
+                is_valid, error_message = _validate_paper_id(pmid)
+                if not is_valid:
+                    form.add_error("paper_id", error_message)
                     return render(request, "upload.html", {"form": form})
-
-                # Normalize pmid
-                pmid = pmid.strip()
-                
-                # Skip validation for test IDs in simulation mode (e.g., TEST123, TEST456)
-                # This allows testing the upload flow without validating against PubMed
-                if settings.SIMULATION_MODE and pmid.upper().startswith("TEST"):
-                    logger.info(f"Simulation mode: Skipping paper ID validation for test ID: {pmid}")
-                else:
-                    # Validate paper ID before starting pipeline
-                    is_valid, error_message = _validate_paper_id(pmid)
-                    if not is_valid:
-                        form.add_error("paper_id", error_message)
-                        return render(request, "upload.html", {"form": form})
 
             # Start pipeline asynchronously and redirect to status page
             output_dir = Path(settings.MEDIA_ROOT) / pmid
