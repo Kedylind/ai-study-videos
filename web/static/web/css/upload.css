@@ -2,8 +2,10 @@
 
 :root {
     --primary-blue: #1e3a5f;
-    --secondary-blue: #2d5a8c;
-    --accent-blue: #4a7ba7;
+    --primary-blue-light: #2d5a8c;
+    --primary-blue-lighter: #e8f0f7;
+    --secondary-blue: #4a90e2;
+    --accent-blue: #6db3f2;
     --light-blue: #e8f0f7;
     --white: #ffffff;
     --text-dark: #1a1a1a;
@@ -20,31 +22,37 @@
     box-sizing: border-box;
 }
 
-html, body {
-    height: 100%;
+html {
     width: 100%;
     margin: 0;
     padding: 0;
+    overflow-x: hidden !important;
+    overflow-y: auto;
 }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     min-height: 100vh;
     color: var(--text-dark);
-    display: flex;
-    flex-direction: column;
     margin: 0;
     padding: 0;
+    padding-top: 70px !important;
+    overflow-x: hidden !important;
+    overflow: visible;
+    width: 100%;
+    box-sizing: border-box;
+    position: relative;
 }
 
 .upload-wrapper {
-    min-height: 100vh;
+    min-height: calc(100vh - 70px);
     display: flex;
     flex-direction: column;
     position: relative;
-    overflow-x: hidden;
-    margin-top: 70px;
-    padding-top: 0;
+    overflow: visible;
+    margin: 0;
+    padding: 0;
+    width: 100%;
 }
 
 /* Gradient Background - Clean and Simple */
@@ -54,9 +62,10 @@ body {
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: -1;
+    z-index: -2;
     background: linear-gradient(135deg, #0f1419 0%, #1e3a5f 40%, #2d5a8c 70%, #e8f0f7 100%);
     background-attachment: fixed;
+    overflow: hidden;
 }
 
 .gradient-orb {
@@ -103,114 +112,142 @@ body {
     }
 }
 
-/* Header Navigation - FINAL FIX */
-header {
+/* UNIFIED HEADER STYLES - Identical across all pages */
+.site-header {
     position: fixed !important;
     top: 0 !important;
     left: 0 !important;
-    width: 100vw !important;
-    height: 70px !important;
-    background-color: var(--primary-blue) !important;
-    border-bottom: 2px solid var(--accent-blue) !important;
+    right: 0 !important;
+    width: 100% !important;
+    background: #1e3a5f !important;
+    color: #ffffff !important;
     z-index: 1000 !important;
+    box-shadow: 0 2px 12px rgba(30, 58, 95, 0.15) !important;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.1) !important;
     margin: 0 !important;
+    padding: 0 !important;
+}
+
+.site-header .header-container,
+.header-container {
+    max-width: 1400px !important;
+    margin: 0 auto !important;
     padding: 0 40px !important;
-    box-sizing: border-box !important;
     display: flex !important;
-    flex-direction: row !important;
     justify-content: space-between !important;
     align-items: center !important;
-    gap: 20px !important;
+    height: 70px !important;
+    position: relative !important;
+    box-sizing: border-box !important;
 }
 
-header h1 {
-    color: #ffffff !important;
-    font-size: 20px !important;
-    font-weight: 900 !important;
+.site-header .header-logo,
+.header-logo {
+    font-size: 28px !important;
+    font-weight: 800 !important;
     margin: 0 !important;
     padding: 0 !important;
-    flex-shrink: 0 !important;
+    position: relative !important;
+    z-index: 1 !important;
+    letter-spacing: -0.5px !important;
+    color: #ffffff !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif !important;
+    line-height: 1 !important;
 }
 
-header h1 .header-logo-link {
+.site-header .header-logo-link,
+.header-logo-link {
     color: #ffffff !important;
     text-decoration: none !important;
-    transition: opacity 0.3s ease !important;
-}
-
-header h1 .header-logo-link:hover {
-    opacity: 0.8 !important;
-}
-
-header nav {
-    display: flex !important;
-    flex-direction: row !important;
-    gap: 12px !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    align-items: center !important;
-}
-
-header nav form {
-    display: contents !important;
-}
-
-header nav a,
-header nav button {
-    background-color: rgba(255, 255, 255, 0.15) !important;
-    border: 1px solid rgba(255, 255, 255, 0.25) !important;
-    color: #ffffff !important;
-    font-size: 13px !important;
-    font-weight: 600 !important;
-    padding: 10px 18px !important;
-    border-radius: 4px !important;
-    cursor: pointer !important;
-    text-decoration: none !important;
-    height: auto !important;
-    line-height: 1.2 !important;
-    white-space: nowrap !important;
-    transition: all 0.2s ease !important;
+    transition: all 0.3s ease !important;
     display: inline-block !important;
+    font-weight: 800 !important;
 }
 
-header nav a {
-    text-align: center !important;
+.site-header .header-logo-link:hover,
+.header-logo-link:hover {
+    opacity: 0.9 !important;
+    transform: translateY(-1px) !important;
 }
 
-header nav button {
-    text-align: center !important;
+.site-header .header-nav,
+.header-nav {
+    display: flex !important;
+    gap: 12px !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    position: relative !important;
+    z-index: 1 !important;
+    margin: 0 !important;
+    padding: 0 !important;
 }
 
-header nav a:hover,
-header nav button:hover {
-    background-color: rgba(255, 255, 255, 0.25) !important;
-    border-color: rgba(255, 255, 255, 0.4) !important;
-}
-
-header nav button.logout-btn {
-    background-color: rgba(255, 255, 255, 0.15) !important;
-    border: 1px solid rgba(255, 255, 255, 0.25) !important;
+.site-header .nav-link,
+.site-header .nav-button,
+.nav-link,
+.nav-button {
     color: #ffffff !important;
-    font-size: 13px !important;
+    text-decoration: none !important;
+    font-size: 14px !important;
     font-weight: 600 !important;
     padding: 10px 18px !important;
+    background: rgba(255, 255, 255, 0.12) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border-radius: 8px !important;
+    cursor: pointer !important;
+    font-family: inherit !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    transition: all 0.3s ease !important;
+    white-space: nowrap !important;
+    margin: 0 !important;
 }
 
-header nav button.logout-btn:hover {
-    background-color: rgba(255, 255, 255, 0.25) !important;
-    border-color: rgba(255, 255, 255, 0.4) !important;
+.site-header .nav-link:hover,
+.site-header .nav-button:hover,
+.nav-link:hover,
+.nav-button:hover {
+    background: rgba(255, 255, 255, 0.25) !important;
+    border-color: rgba(255, 255, 255, 0.35) !important;
+    transform: translateY(-2px) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
 }
 
+.site-header .nav-link-primary,
+.nav-link-primary {
+    background: rgba(255, 255, 255, 0.25) !important;
+    border-color: rgba(255, 255, 255, 0.35) !important;
+    font-weight: 700 !important;
+}
+
+.site-header .nav-link-primary:hover,
+.nav-link-primary:hover {
+    background: rgba(255, 255, 255, 0.35) !important;
+    border-color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.site-header .nav-form,
+.nav-form {
+    display: inline !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.site-header .nav-welcome,
 .nav-welcome {
-    color: rgba(255, 255, 255, 0.8);
-    font-size: 13px;
-    white-space: nowrap;
-    display: none;
+    background: none !important;
+    border: none !important;
+    color: rgba(255, 255, 255, 0.95) !important;
+    padding: 8px 12px !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    margin: 0 !important;
 }
 
+.site-header .nav-welcome strong,
 .nav-welcome strong {
-    color: var(--white);
-    font-weight: 700;
+    color: #ffffff !important;
+    font-weight: 700 !important;
 }
 
 /* Main Content */
@@ -222,6 +259,10 @@ main {
     padding: 60px 40px;
     position: relative;
     z-index: 1;
+    overflow: visible;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 /* Upload Container */
@@ -235,6 +276,8 @@ main {
     padding: 70px 60px;
     animation: slideUp 0.8s ease-out;
     border: 1px solid rgba(255, 255, 255, 0.2);
+    box-sizing: border-box;
+    overflow: visible;
 }
 
 @keyframes slideUp {
@@ -283,6 +326,7 @@ main {
 .form-group input[type="password"],
 .form-group input[type="file"] {
     width: 100%;
+    max-width: 100%;
     padding: 16px 18px;
     border: 2px solid #e5e7eb;
     border-radius: 12px;
@@ -291,6 +335,7 @@ main {
     transition: all 0.3s ease;
     background: var(--white);
     color: var(--text-dark);
+    box-sizing: border-box;
 }
 
 .form-group input[type="text"]:focus,
@@ -368,6 +413,8 @@ main {
     background: linear-gradient(135deg, rgba(232, 240, 247, 0.6) 0%, rgba(232, 240, 247, 0.2) 100%);
     position: relative;
     overflow: hidden;
+    box-sizing: border-box;
+    width: 100%;
 }
 
 .file-upload-area::before {
@@ -587,28 +634,27 @@ main {
 
 /* Responsive Design */
 @media (max-width: 768px) {
-    header {
-        padding: 15px 30px;
-        grid-template-columns: 1fr auto;
-        gap: 20px;
+    .site-header .header-container {
+        padding: 0 20px;
+        height: 70px;
     }
 
-    header h1 {
-        font-size: 24px;
+    .site-header .header-logo {
+        font-size: 22px;
     }
 
-    header nav {
+    .site-header .header-nav {
         gap: 8px;
     }
 
-    header nav a,
-    header nav button {
-        padding: 8px 14px;
-        font-size: 13px;
+    .site-header .nav-link, 
+    .site-header .nav-button {
+        font-size: 12px;
+        padding: 8px 12px;
     }
 
-    header nav button.logout-btn {
-        padding: 8px 16px;
+    .site-header .nav-welcome {
+        display: none;
     }
 
     main {
@@ -659,28 +705,27 @@ main {
 }
 
 @media (max-width: 480px) {
-    header {
-        padding: 12px 16px;
-        grid-template-columns: 1fr auto;
-        gap: 12px;
+    .site-header .header-container {
+        padding: 0 16px;
+        height: 70px;
     }
 
-    header h1 {
-        font-size: 18px;
+    .site-header .header-logo {
+        font-size: 20px;
     }
 
-    header nav {
+    .site-header .header-nav {
         gap: 6px;
     }
 
-    header nav a,
-    header nav button {
-        padding: 6px 10px;
+    .site-header .nav-link, 
+    .site-header .nav-button {
         font-size: 11px;
+        padding: 8px 10px;
     }
 
-    header nav button.logout-btn {
-        padding: 6px 12px;
+    .site-header .nav-welcome {
+        display: none;
     }
 
     main {

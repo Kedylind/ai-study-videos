@@ -21,6 +21,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .forms import PaperUploadForm
 from .tasks import generate_video_task, get_task_status, update_job_progress_from_files, test_r2_storage_write_task
+from .pdf_extractor import extract_pdf_content, validate_pdf, generate_paper_id
 from celery.result import AsyncResult
 from config.celery import app as celery_app
 
@@ -1205,18 +1206,92 @@ def upload_paper(request):
             uploaded = form.cleaned_data.get("file")
 
             if uploaded:
-                # Save uploaded file into media/<basename>/uploaded_file
-                name = Path(uploaded.name).stem
-                out_dir = Path(settings.MEDIA_ROOT) / name
+                # Validate file extension
+                if not uploaded.name.lower().endswith('.pdf'):
+                    form.add_error("file", "Only PDF files are supported.")
+                    return render(request, "upload.html", {"form": form})
+                
+                # Validate file size (50MB max)
+                max_size = 50 * 1024 * 1024  # 50MB
+                if uploaded.size > max_size:
+                    size_mb = uploaded.size / (1024 * 1024)
+                    form.add_error("file", f"File size ({size_mb:.1f}MB) exceeds maximum allowed size (50MB)")
+                    return render(request, "upload.html", {"form": form})
+                
+                # Generate unique paper ID
+                paper_id = generate_paper_id(uploaded.name, use_hash=False)
+                
+                # Save uploaded file
+                out_dir = Path(settings.MEDIA_ROOT) / paper_id
                 out_dir.mkdir(parents=True, exist_ok=True)
                 file_path = out_dir / uploaded.name
-                with open(file_path, "wb") as f:
-                    for chunk in uploaded.chunks():
-                        f.write(chunk)
-
-                # TODO: support pipeline from local file; for now, return to status page
-                # We'll treat 'name' as an identifier
-                pmid = name
+                
+                try:
+                    with open(file_path, "wb") as f:
+                        for chunk in uploaded.chunks():
+                            f.write(chunk)
+                    
+                    logger.info(f"Saved uploaded file to {file_path}")
+                    
+                    # Validate PDF structure
+                    is_valid, error_msg = validate_pdf(file_path)
+                    if not is_valid:
+                        form.add_error("file", error_msg)
+                        # Clean up saved file
+                        try:
+                            file_path.unlink()
+                            out_dir.rmdir()
+                        except:
+                            pass
+                        return render(request, "upload.html", {"form": form})
+                    
+                    # Extract PDF content and create paper.json
+                    try:
+                        paper_data = extract_pdf_content(file_path, filename=uploaded.name)
+                        paper_json_path = out_dir / "paper.json"
+                        
+                        import json
+                        with open(paper_json_path, "w", encoding="utf-8") as f:
+                            json.dump(paper_data, f, indent=2, ensure_ascii=False)
+                        
+                        # Verify paper.json was created successfully
+                        if not paper_json_path.exists():
+                            raise ValueError("Failed to create paper.json file")
+                        
+                        logger.info(f"Extracted PDF content and created paper.json for {paper_id}")
+                        pmid = paper_id  # Use generated ID
+                        
+                    except ValueError as e:
+                        # User-friendly error (validation, extraction issues)
+                        logger.error(f"PDF extraction failed: {e}")
+                        form.add_error("file", f"Failed to extract content from PDF: {str(e)}")
+                        # Clean up
+                        try:
+                            file_path.unlink()
+                            if (out_dir / "paper.json").exists():
+                                (out_dir / "paper.json").unlink()
+                            out_dir.rmdir()
+                        except:
+                            pass
+                        return render(request, "upload.html", {"form": form})
+                    except Exception as e:
+                        # Unexpected error
+                        logger.error(f"Unexpected error during PDF extraction: {e}", exc_info=True)
+                        form.add_error("file", "An unexpected error occurred while processing the PDF. Please try again or contact support.")
+                        # Clean up
+                        try:
+                            file_path.unlink()
+                            if (out_dir / "paper.json").exists():
+                                (out_dir / "paper.json").unlink()
+                            out_dir.rmdir()
+                        except:
+                            pass
+                        return render(request, "upload.html", {"form": form})
+                        
+                except Exception as e:
+                    logger.error(f"Failed to save uploaded file: {e}", exc_info=True)
+                    form.add_error("file", f"Failed to save uploaded file: {str(e)}")
+                    return render(request, "upload.html", {"form": form})
             else:
                 if not pmid:
                     form.add_error(None, "Provide a PubMed ID or upload a file")
@@ -1268,18 +1343,17 @@ def pipeline_status(request, pmid: str):
                     # No job found, fall through to file-based check
                     pass
                 else:
-                    # Update progress from files if job is running
+                    # Just refresh from database - real-time parser handles updates
+                    job.refresh_from_db()
+                    
+                    # Check if progress is stale (for logging/debugging)
                     if job.status in ['pending', 'running']:
-                        task_id_file = output_dir / "task_id.txt"
-                        task_id = None
-                        if task_id_file.exists():
-                            try:
-                                with open(task_id_file, "r") as f:
-                                    task_id = f.read().strip()
-                            except:
-                                pass
-                        update_job_progress_from_files(pmid, task_id)
-                        job.refresh_from_db()
+                        from web.progress_manager import is_progress_stale
+                        if is_progress_stale(job):
+                            logger.warning(
+                                f"Progress appears stale for job {job.id} (paper {pmid}), "
+                                f"last update: {job.progress_updated_at}"
+                            )
                     
                     # Convert job to progress dict
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
@@ -1301,17 +1375,17 @@ def pipeline_status(request, pmid: str):
                 # Multiple jobs found - get the most recent one
                 job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
                 if job:
+                    # Just refresh from database - real-time parser handles updates
+                    job.refresh_from_db()
+                    
+                    # Check if progress is stale (for logging/debugging)
                     if job.status in ['pending', 'running']:
-                        task_id_file = output_dir / "task_id.txt"
-                        task_id = None
-                        if task_id_file.exists():
-                            try:
-                                with open(task_id_file, "r") as f:
-                                    task_id = f.read().strip()
-                            except:
-                                pass
-                        update_job_progress_from_files(pmid, task_id)
-                        job.refresh_from_db()
+                        from web.progress_manager import is_progress_stale
+                        if is_progress_stale(job):
+                            logger.warning(
+                                f"Progress appears stale for job {job.id} (paper {pmid}), "
+                                f"last update: {job.progress_updated_at}"
+                            )
                     
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
                     progress = {
@@ -1383,7 +1457,21 @@ def pipeline_status(request, pmid: str):
             "current_step": progress.get("current_step"),
             "completed_steps": progress.get("completed_steps", []),
             "progress_percent": progress.get("progress_percent", 0),
+            "progress_updated_at": None,  # Add timestamp
         }
+        
+        # Add progress timestamp if available from job
+        try:
+            from web.models import VideoGenerationJob
+            if request.user.is_authenticated:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+            else:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            
+            if job and job.progress_updated_at:
+                status["progress_updated_at"] = job.progress_updated_at.isoformat()
+        except Exception:
+            pass  # Ignore errors getting timestamp
         
         # CRITICAL FIX: If status is completed or progress is 100%, ensure final_video_url is set
         if (status["status"] == "completed" or status["progress_percent"] >= 100):
@@ -1400,20 +1488,16 @@ def pipeline_status(request, pmid: str):
             status["error_type"] = progress["error_type"]
             # Add user-friendly error message
             status["error_message"] = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
-        
-        # include tail of log if present
-        if log_path.exists():
-            try:
-                with open(log_path, "rb") as f:
-                    f.seek(max(0, f.tell() - 8192))
-                    data = f.read().decode(errors="replace")
-            except Exception:
-                data = ""
-            status["log_tail"] = data
 
         import json
         response = JsonResponse(status)
         response.content = json.dumps(status, indent=2)
+        
+        # Prevent browser caching of progress updates
+        response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response['Pragma'] = 'no-cache'
+        response['Expires'] = '0'
+        
         return response
 
     # Render an HTML status page
@@ -1769,18 +1853,17 @@ def api_status(request, paper_id: str):
                 job = None
         
         if job:
-            # Update progress from files if job is running
+            # Just refresh from database - real-time parser handles updates
+            job.refresh_from_db()
+            
+            # Check if progress is stale (for logging/debugging)
             if job.status in ['pending', 'running']:
-                task_id_file = output_dir / "task_id.txt"
-                task_id = None
-                if task_id_file.exists():
-                    try:
-                        with open(task_id_file, "r") as f:
-                            task_id = f.read().strip()
-                    except:
-                        pass
-                update_job_progress_from_files(paper_id, task_id)
-                job.refresh_from_db()
+                from web.progress_manager import is_progress_stale
+                if is_progress_stale(job):
+                    logger.warning(
+                        f"Progress appears stale for job {job.id} (paper {paper_id}), "
+                        f"last update: {job.progress_updated_at}"
+                    )
             
             # Convert job to progress dict
             completed_steps = _get_completed_steps_from_progress(job.progress_percent)
@@ -1796,6 +1879,7 @@ def api_status(request, paper_id: str):
                 "current_step": job.current_step,
                 "completed_steps": completed_steps,
                 "progress_percent": job.progress_percent,
+                "progress_updated_at": job.progress_updated_at.isoformat() if job.progress_updated_at else None,
             }
             if job.status == 'failed':
                 progress["error"] = job.error_message
@@ -1842,11 +1926,19 @@ def api_status(request, paper_id: str):
         "current_step": progress["current_step"],
         "completed_steps": progress["completed_steps"],
         "progress_percent": progress["progress_percent"],
+        "progress_updated_at": progress.get("progress_updated_at"),
         "final_video_url": final_video_url,
         "log_tail": log_tail,
     }
     
-    return JsonResponse(response)
+    json_response = JsonResponse(response)
+    
+    # Prevent browser caching of progress updates
+    json_response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    json_response['Pragma'] = 'no-cache'
+    json_response['Expires'] = '0'
+    
+    return json_response
 
 
 @require_http_methods(["GET"])

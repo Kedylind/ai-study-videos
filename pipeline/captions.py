@@ -159,6 +159,8 @@ def generate_ass_file(
 def burn_captions_to_video(video_path: Path, ass_path: Path, output_path: Path) -> None:
     """
     Burn ASS captions into video using FFmpeg.
+    
+    Uses memory-efficient settings to avoid OOM kills in constrained environments.
 
     Args:
         video_path: Path to input video
@@ -167,22 +169,49 @@ def burn_captions_to_video(video_path: Path, ass_path: Path, output_path: Path) 
 
     Raises:
         subprocess.CalledProcessError: If FFmpeg command fails
+        subprocess.TimeoutExpired: If FFmpeg times out
+        Exception: If FFmpeg process is killed (e.g., OOM)
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Check video file size and warn if very large (may cause memory issues)
+    try:
+        video_size_mb = video_path.stat().st_size / (1024 * 1024)
+        if video_size_mb > 50:
+            logger.warning(
+                f"Video file is large ({video_size_mb:.1f}MB). "
+                "This may cause memory issues during caption processing."
+            )
+    except Exception:
+        pass  # Ignore errors checking file size
 
-    # FFmpeg command to burn subtitles
+    # FFmpeg command to burn subtitles with memory-efficient settings
+    # Use "ultrafast" preset for lowest memory usage (faster encoding, slightly larger files)
+    # Aggressive memory limits to prevent OOM kills in constrained environments
     cmd = [
         "ffmpeg",
         "-i",
         str(video_path),
         "-vf",
-        f"ass={ass_path}",
+        f"ass={ass_path}",  # Burn subtitles
         "-c:v",
         "libx264",
         "-crf",
         "23",
         "-preset",
-        "medium",
+        "ultrafast",  # Changed to "ultrafast" for lowest memory usage (was "fast")
+        "-threads",
+        "1",  # Use single thread to minimize memory usage
+        "-thread_queue_size",
+        "256",  # Smaller queue to reduce memory usage
+        "-max_muxing_queue_size",
+        "512",  # Smaller muxing queue
+        "-bufsize",
+        "2M",  # Limit buffer size to prevent memory spikes
+        "-maxrate",
+        "5M",  # Limit bitrate to control memory usage
+        "-movflags",
+        "+faststart",  # Enable fast start for web playback
         "-c:a",
         "copy",
         "-y",  # Overwrite output file
@@ -192,12 +221,68 @@ def burn_captions_to_video(video_path: Path, ass_path: Path, output_path: Path) 
     logger.info(f"Burning captions into {video_path.name}...")
     logger.debug(f"FFmpeg command: {' '.join(cmd)}")
 
+    # Memory-efficient FFmpeg execution
+    # Don't use capture_output=True as it buffers all output in memory
+    # Redirect all output to devnull to avoid memory issues
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        # Run FFmpeg with timeout (30 minutes should be enough for video processing)
+        # Discard all output to save memory - we only care about success/failure
+        result = subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1800,  # 30 minute timeout
+        )
+        
         logger.info(f"✓ Created captioned video: {output_path}")
-
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"FFmpeg timed out after 30 minutes for {video_path.name}")
+        # Clean up partial output
+        if output_path.exists():
+            try:
+                output_path.unlink()
+            except Exception:
+                pass
+        raise Exception(f"FFmpeg timed out while processing {video_path.name}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"FFmpeg failed: {e.stderr}")
+        logger.error(f"FFmpeg failed with return code {e.returncode} for {video_path.name}")
+        # Check if output file was partially created and clean it up
+        if output_path.exists():
+            try:
+                output_path.unlink()
+                logger.debug(f"Removed incomplete output file: {output_path}")
+            except Exception:
+                pass
+        
+        # Provide more helpful error message
+        error_msg = f"FFmpeg failed while processing {video_path.name} (return code: {e.returncode})"
+        if e.returncode == -9:  # SIGKILL typically returns -9
+            error_msg += ". Process was killed, likely due to memory exhaustion (OOM)."
+            logger.error("This indicates the system ran out of memory. Consider using smaller video files or increasing available memory.")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = str(e)
+        # Check if error message indicates SIGKILL
+        if "SIGKILL" in error_msg or "died with" in error_msg or "killed" in error_msg.lower():
+            logger.error(
+                f"FFmpeg process was killed (likely OOM) for {video_path.name}. "
+                "The system ran out of memory during video processing. "
+                "Consider using smaller video files or increasing available memory."
+            )
+            # Clean up partial output
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
+            raise Exception(
+                f"FFmpeg process was killed due to memory exhaustion while processing {video_path.name}. "
+                "This is a system-level issue (OOM killer). "
+                "The video may be too large for the available memory."
+            )
+        logger.error(f"Unexpected error during FFmpeg execution for {video_path.name}: {e}")
         raise
 
 

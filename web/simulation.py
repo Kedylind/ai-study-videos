@@ -140,17 +140,38 @@ def update_job_progress(job, step_name: str):
         # Refresh job from database to avoid stale data
         job.refresh_from_db()
         
-        job.status = status
-        job.progress_percent = progress_percent
-        job.current_step = current_step
-        
-        if status == "completed":
-            job.completed_at = django_timezone.now()
-            final_video = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
-            if final_video.exists():
-                job.final_video_path = str(final_video)
-        
-        job.save(update_fields=['status', 'progress_percent', 'current_step', 'completed_at', 'final_video_path', 'updated_at'])
+        # Use progress manager for updates
+        try:
+            from web.progress_manager import update_progress
+            update_progress(
+                task_id=task_id,
+                progress_percent=progress_percent,
+                current_step=current_step,
+                status=status
+            )
+            # Refresh to get updated values
+            job.refresh_from_db()
+            
+            # Handle completion-specific fields
+            if status == "completed":
+                final_video = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
+                if final_video.exists():
+                    job.final_video_path = str(final_video)
+                    job.save(update_fields=['final_video_path', 'updated_at'])
+        except Exception as e:
+            logger.warning(f"Failed to update progress via manager in simulation, updating directly: {e}")
+            # Fallback to direct update
+            job.status = status
+            job.progress_percent = progress_percent
+            job.current_step = current_step
+            
+            if status == "completed":
+                job.completed_at = django_timezone.now()
+                final_video = Path(settings.MEDIA_ROOT) / job.paper_id / "final_video.mp4"
+                if final_video.exists():
+                    job.final_video_path = str(final_video)
+            
+            job.save(update_fields=['status', 'progress_percent', 'current_step', 'completed_at', 'final_video_path', 'updated_at'])
         logger.info(f"Updated job record: {status} - {progress_percent}% - {current_step}")
     except Exception as e:
         logger.error(f"Error updating job progress: {e}")

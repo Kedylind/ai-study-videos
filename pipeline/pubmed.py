@@ -30,6 +30,14 @@ def fetch_paper(paper_id: str, output_dir: str) -> Dict:
     Raises:
         PMCNotFoundError: If paper is not in PMC
     """
+    # Reject uploaded file IDs - these should have paper.json created during upload
+    if paper_id.upper().startswith("UPLOAD_"):
+        raise PMCNotFoundError(
+            f"Paper ID '{paper_id}' appears to be from a file upload. "
+            "Uploaded files should have paper.json created during upload. "
+            "If you see this error, the PDF extraction may have failed."
+        )
+    
     # Step 1: Determine if input is PMID or PMCID
     if paper_id.upper().startswith("PMC"):
         # Already a PMCID
