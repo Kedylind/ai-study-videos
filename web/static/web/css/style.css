@@ -82,6 +82,16 @@ header h1 {
     letter-spacing: -0.5px;
 }
 
+header h1 .header-logo-link {
+    color: var(--white);
+    text-decoration: none;
+    transition: opacity 0.3s ease;
+}
+
+header h1 .header-logo-link:hover {
+    opacity: 0.8;
+}
+
 nav {
     margin-top: 20px;
     display: flex;
