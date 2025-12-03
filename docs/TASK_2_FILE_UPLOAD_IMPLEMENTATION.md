@@ -602,15 +602,59 @@ def extract_title(pdf_pages: list, filename: str) -> str:
             if 10 <= len(title) <= 200:
                 return title
         
-        # Alternative: Look for text in top 20% of page
+        # Alternative: Look for text in top 30% of page (title is usually at the top)
+        # In PDF coordinates, top increases downward, so top 30% means top < page_height * 0.3
         page_height = first_page.height
-        top_words = [w for w in words if w['top'] > page_height * 0.8]
+        top_words = [w for w in words if w['top'] < page_height * 0.3]
+        
+        if not top_words:
+            # If no words in top 30%, try top 50%
+            top_words = [w for w in words if w['top'] < page_height * 0.5]
+        
         if top_words:
-            title_words = sorted(top_words, key=lambda x: x['x0'])[:20]
-            title = " ".join([w['text'] for w in title_words])
-            title = re.sub(r'\s+', ' ', title).strip()
-            if 10 <= len(title) <= 200:
-                return title
+            # Group words by approximate y-position (same line)
+            # Sort by y-position (top to bottom) to get lines in order
+            lines = {}
+            for word in top_words:
+                y = round(word['top'], 1)  # Round to group nearby words on same line
+                if y not in lines:
+                    lines[y] = []
+                lines[y].append((word['x0'], word['text']))  # Store x-position for sorting
+            
+            # Sort lines by y-position (top to bottom)
+            sorted_lines = sorted(lines.items(), key=lambda x: x[0])
+            
+            # Find first significant line that looks like a title
+            # Title should be: not too short (at least 5 words), not too long (max 30 words)
+            for y_pos, line_words in sorted_lines:
+                # Sort words by x-position (left to right) to reconstruct line
+                line_words_sorted = sorted(line_words, key=lambda x: x[0])
+                line_text = " ".join([w[1] for w in line_words_sorted])
+                line_text = re.sub(r'\s+', ' ', line_text).strip()
+                
+                # Check if this looks like a title
+                word_count = len(line_text.split())
+                if 5 <= word_count <= 30 and 20 <= len(line_text) <= 200:
+                    # This looks like a title
+                    return line_text
+            
+            # If no perfect match, take the first line that's not too short
+            for y_pos, line_words in sorted_lines:
+                line_words_sorted = sorted(line_words, key=lambda x: x[0])
+                line_text = " ".join([w[1] for w in line_words_sorted])
+                line_text = re.sub(r'\s+', ' ', line_text).strip()
+                
+                if len(line_text) >= 10:  # At least 10 characters
+                    return line_text
+        
+        # If still no title found, try extracting first few lines from top of page text
+        first_page_text = first_page.extract_text()
+        if first_page_text:
+            lines = first_page_text.split('\n')
+            for line in lines[:10]:  # Check first 10 lines
+                line = line.strip()
+                if len(line) >= 10 and 5 <= len(line.split()) <= 30:
+                    return line
         
     except Exception as e:
         logger.warning(f"Failed to extract title from PDF: {e}")

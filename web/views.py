@@ -1343,18 +1343,17 @@ def pipeline_status(request, pmid: str):
                     # No job found, fall through to file-based check
                     pass
                 else:
-                    # Update progress from files if job is running
+                    # Just refresh from database - real-time parser handles updates
+                    job.refresh_from_db()
+                    
+                    # Check if progress is stale (for logging/debugging)
                     if job.status in ['pending', 'running']:
-                        task_id_file = output_dir / "task_id.txt"
-                        task_id = None
-                        if task_id_file.exists():
-                            try:
-                                with open(task_id_file, "r") as f:
-                                    task_id = f.read().strip()
-                            except:
-                                pass
-                        update_job_progress_from_files(pmid, task_id)
-                        job.refresh_from_db()
+                        from web.progress_manager import is_progress_stale
+                        if is_progress_stale(job):
+                            logger.warning(
+                                f"Progress appears stale for job {job.id} (paper {pmid}), "
+                                f"last update: {job.progress_updated_at}"
+                            )
                     
                     # Convert job to progress dict
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
@@ -1376,17 +1375,17 @@ def pipeline_status(request, pmid: str):
                 # Multiple jobs found - get the most recent one
                 job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
                 if job:
+                    # Just refresh from database - real-time parser handles updates
+                    job.refresh_from_db()
+                    
+                    # Check if progress is stale (for logging/debugging)
                     if job.status in ['pending', 'running']:
-                        task_id_file = output_dir / "task_id.txt"
-                        task_id = None
-                        if task_id_file.exists():
-                            try:
-                                with open(task_id_file, "r") as f:
-                                    task_id = f.read().strip()
-                            except:
-                                pass
-                        update_job_progress_from_files(pmid, task_id)
-                        job.refresh_from_db()
+                        from web.progress_manager import is_progress_stale
+                        if is_progress_stale(job):
+                            logger.warning(
+                                f"Progress appears stale for job {job.id} (paper {pmid}), "
+                                f"last update: {job.progress_updated_at}"
+                            )
                     
                     completed_steps = _get_completed_steps_from_progress(job.progress_percent)
                     progress = {
@@ -1458,7 +1457,21 @@ def pipeline_status(request, pmid: str):
             "current_step": progress.get("current_step"),
             "completed_steps": progress.get("completed_steps", []),
             "progress_percent": progress.get("progress_percent", 0),
+            "progress_updated_at": None,  # Add timestamp
         }
+        
+        # Add progress timestamp if available from job
+        try:
+            from web.models import VideoGenerationJob
+            if request.user.is_authenticated:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid, user=request.user).order_by('-created_at').first()
+            else:
+                job = VideoGenerationJob.objects.filter(paper_id=pmid).order_by('-created_at').first()
+            
+            if job and job.progress_updated_at:
+                status["progress_updated_at"] = job.progress_updated_at.isoformat()
+        except Exception:
+            pass  # Ignore errors getting timestamp
         
         # CRITICAL FIX: If status is completed or progress is 100%, ensure final_video_url is set
         if (status["status"] == "completed" or status["progress_percent"] >= 100):
@@ -1475,20 +1488,16 @@ def pipeline_status(request, pmid: str):
             status["error_type"] = progress["error_type"]
             # Add user-friendly error message
             status["error_message"] = _get_user_friendly_error(progress["error_type"], progress.get("error", ""))
-        
-        # include tail of log if present
-        if log_path.exists():
-            try:
-                with open(log_path, "rb") as f:
-                    f.seek(max(0, f.tell() - 8192))
-                    data = f.read().decode(errors="replace")
-            except Exception:
-                data = ""
-            status["log_tail"] = data
 
         import json
         response = JsonResponse(status)
         response.content = json.dumps(status, indent=2)
+        
+        # Prevent browser caching of progress updates
+        response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response['Pragma'] = 'no-cache'
+        response['Expires'] = '0'
+        
         return response
 
     # Render an HTML status page
@@ -1844,18 +1853,17 @@ def api_status(request, paper_id: str):
                 job = None
         
         if job:
-            # Update progress from files if job is running
+            # Just refresh from database - real-time parser handles updates
+            job.refresh_from_db()
+            
+            # Check if progress is stale (for logging/debugging)
             if job.status in ['pending', 'running']:
-                task_id_file = output_dir / "task_id.txt"
-                task_id = None
-                if task_id_file.exists():
-                    try:
-                        with open(task_id_file, "r") as f:
-                            task_id = f.read().strip()
-                    except:
-                        pass
-                update_job_progress_from_files(paper_id, task_id)
-                job.refresh_from_db()
+                from web.progress_manager import is_progress_stale
+                if is_progress_stale(job):
+                    logger.warning(
+                        f"Progress appears stale for job {job.id} (paper {paper_id}), "
+                        f"last update: {job.progress_updated_at}"
+                    )
             
             # Convert job to progress dict
             completed_steps = _get_completed_steps_from_progress(job.progress_percent)
@@ -1871,6 +1879,7 @@ def api_status(request, paper_id: str):
                 "current_step": job.current_step,
                 "completed_steps": completed_steps,
                 "progress_percent": job.progress_percent,
+                "progress_updated_at": job.progress_updated_at.isoformat() if job.progress_updated_at else None,
             }
             if job.status == 'failed':
                 progress["error"] = job.error_message
@@ -1917,11 +1926,19 @@ def api_status(request, paper_id: str):
         "current_step": progress["current_step"],
         "completed_steps": progress["completed_steps"],
         "progress_percent": progress["progress_percent"],
+        "progress_updated_at": progress.get("progress_updated_at"),
         "final_video_url": final_video_url,
         "log_tail": log_tail,
     }
     
-    return JsonResponse(response)
+    json_response = JsonResponse(response)
+    
+    # Prevent browser caching of progress updates
+    json_response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    json_response['Pragma'] = 'no-cache'
+    json_response['Expires'] = '0'
+    
+    return json_response
 
 
 @require_http_methods(["GET"])

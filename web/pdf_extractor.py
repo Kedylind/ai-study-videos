@@ -64,6 +64,7 @@ def extract_text(pdf_file_path: Path) -> str:
     try:
         num_pages = 0
         with pdfplumber.open(pdf_file_path) as pdf:
+            # Capture num_pages inside the context manager before it closes
             num_pages = len(pdf.pages)
             for page_num, page in enumerate(pdf.pages, 1):
                 try:
@@ -75,6 +76,7 @@ def extract_text(pdf_file_path: Path) -> str:
                     logger.warning(f"Failed to extract text from page {page_num}: {e}")
                     continue
         
+        # Use the captured num_pages value (safe to use after context manager closes)
         combined_text = "\n\n".join(full_text)
         logger.info(f"Extracted {len(combined_text)} total characters from {num_pages} pages")
         return combined_text

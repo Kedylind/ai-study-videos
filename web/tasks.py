@@ -329,53 +329,18 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                 if parsed:
                     progress_state.update(parsed)
                     
-                    # Update database immediately
+                    # Use progress manager to update database (with queuing)
                     try:
-                        from django.db import connections
-                        connections.close_all()
+                        from web.progress_manager import queue_progress_update
                         
-                        from web.models import VideoGenerationJob
-                        from django.utils import timezone
-                        
-                        try:
-                            job = VideoGenerationJob.objects.get(task_id=self.request.id)
-                        except VideoGenerationJob.DoesNotExist:
-                            # Job doesn't exist yet - might be created later, skip update
-                            logger.debug(f"Job not found for task_id {self.request.id}, skipping progress update")
-                            connections.close_all()
-                            return
-                        
-                        # Only update if job is still running
-                        if job.status in ['pending', 'running']:
-                            job.progress_percent = progress_state["progress_percent"]
-                            job.current_step = progress_state.get("current_step")
-                            
-                            if progress_state.get("status") == "failed":
-                                job.status = "failed"
-                            
-                            if progress_state["progress_percent"] == 100:
-                                job.status = "completed"
-                                job.current_step = None
-                                job.completed_at = timezone.now()
-                            
-                            job.save(update_fields=[
-                                'progress_percent', 'current_step', 'status', 
-                                'completed_at', 'updated_at'
-                            ])
-                            
-                            logger.info(
-                                f"Progress updated: {job.progress_percent}%, "
-                                f"step: {job.current_step}"
-                            )
-                        
-                        connections.close_all()
+                        queue_progress_update(
+                            task_id=self.request.id,
+                            progress_percent=progress_state["progress_percent"],
+                            current_step=progress_state.get("current_step"),
+                            status=progress_state.get("status", "running")
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to update progress from line: {e}", exc_info=True)
-                        try:
-                            from django.db import connections
-                            connections.close_all()
-                        except:
-                            pass
+                        logger.warning(f"Failed to queue progress update: {e}", exc_info=True)
             
             # Start thread to read output and update progress in real-time
             def read_output_and_update_progress():
@@ -510,9 +475,12 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
             return_code = -1
             raise
         
-        # Final progress update before checking completion status
-        # This ensures we capture the actual progress even if pipeline failed
-        update_job_progress_from_files(pmid, self.request.id)
+        # Process any pending progress updates from the queue
+        try:
+            from web.progress_manager import process_update_queue
+            process_update_queue()
+        except Exception as e:
+            logger.warning(f"Failed to process update queue: {e}")
         
         # Check if pipeline succeeded
         final_video = output_path / "final_video.mp4"
@@ -571,12 +539,29 @@ def generate_video_task(self, pmid: str, output_dir: str, user_id: Optional[int]
                         # Local storage - just save the path
                         job.final_video_path = str(final_video)
                     
-                    # Update job status
-                    job.status = 'completed'
-                    job.progress_percent = 100
-                    job.current_step = None
-                    job.completed_at = timezone.now()
-                    job.save(update_fields=['final_video', 'final_video_path', 'status', 'progress_percent', 'current_step', 'completed_at', 'updated_at'])
+                    # Update job status using progress manager
+                    try:
+                        from web.progress_manager import update_progress
+                        update_progress(
+                            task_id=self.request.id,
+                            progress_percent=100,
+                            current_step=None,
+                            status='completed'
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update progress via manager, updating directly: {e}")
+                        # Fallback to direct update
+                        job.status = 'completed'
+                        job.progress_percent = 100
+                        job.current_step = None
+                        job.completed_at = timezone.now()
+                        job.save(update_fields=['final_video', 'final_video_path', 'status', 'progress_percent', 'current_step', 'completed_at', 'updated_at'])
+                    else:
+                        # Still need to save final_video and final_video_path
+                        job.refresh_from_db()
+                        job.final_video = job.final_video  # Keep existing value
+                        job.final_video_path = job.final_video_path  # Keep existing value
+                        job.save(update_fields=['final_video', 'final_video_path', 'updated_at'])
                     
                 except Exception as e:
                     logger.error(f"Failed to update job record on completion: {e}", exc_info=True)

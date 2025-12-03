@@ -8,6 +8,7 @@ class PaperUploadForm(forms.Form):
         required=False,
         label="PubMed ID or PMCID",
         help_text="Enter a PMID (e.g. 33963468) or PMCID (e.g. PMC10979640)",
+        widget=forms.TextInput(attrs={"autocomplete": "off"}),
     )
 
     file = forms.FileField(
@@ -20,7 +21,11 @@ class PaperUploadForm(forms.Form):
         required=True,
         label="Access Code",
         help_text="Enter the access code to generate videos",
-        widget=forms.PasswordInput(attrs={"placeholder": "Enter access code"}),
+        widget=forms.PasswordInput(attrs={
+            "placeholder": "Enter access code",
+            "autocomplete": "off",
+            "data-form-type": "other",  # Additional hint for password managers
+        }),
     )
 
     def clean_file(self):

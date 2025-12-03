@@ -99,9 +99,6 @@
     </div>
   </div>
 
-  <h2>Pipeline log (tail)</h2>
-  <pre id="log-content" class="log-content">{{ log_tail|default:"(No log available yet)" }}</pre>
-
   <div class="button-group">
     <a href="/upload/" class="btn-primary">Generate another video</a>
     <a href="?_json=1" class="btn-secondary" target="_blank">View JSON status</a>
@@ -113,11 +110,41 @@
     let refreshInterval = null;
     let isCompleted = {% if final_video_exists %}true{% else %}false{% endif %};
     let isFailed = {% if progress.status|default:"" == "failed" %}true{% else %}false{% endif %};
+    let lastProgressTimestamp = null;
+    let staleUpdateCount = 0;
 
     function updateStatus() {
-      fetch(`/status/${pmid}/?_json=1`)
-        .then(response => response.json())
+      fetch(`/status/${pmid}/?_json=1`, {
+        cache: 'no-store',  // Prevent browser caching
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      })
+        .then(response => {
+          // Check if response is from cache
+          if (response.headers.get('X-From-Cache')) {
+            console.warn('Response was cached, forcing refresh');
+            return updateStatus();  // Retry
+          }
+          return response.json();
+        })
         .then(data => {
+          // Check if progress timestamp is newer
+          if (data.progress_updated_at) {
+            const updateTime = new Date(data.progress_updated_at);
+            if (lastProgressTimestamp && updateTime <= lastProgressTimestamp) {
+              staleUpdateCount++;
+              if (staleUpdateCount > 5) {
+                console.warn('Progress updates appear stale, last update:', lastProgressTimestamp);
+                // Could show warning to user: "Progress updates may be delayed"
+              }
+            } else {
+              staleUpdateCount = 0;
+              lastProgressTimestamp = updateTime;
+            }
+          }
+          
           // Update progress bar
           const progressBar = document.getElementById('progress-bar');
           const progressText = document.getElementById('progress-text');
@@ -154,14 +181,6 @@
             });
             if (data.completed_steps.length > 0) {
               completedStepsList.parentElement.style.display = 'block';
-            }
-          }
-
-          // Update log
-          if (data.log_tail !== undefined) {
-            const logContent = document.getElementById('log-content');
-            if (logContent) {
-              logContent.textContent = data.log_tail || "(No log available yet)";
             }
           }
 

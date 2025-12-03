@@ -56,12 +56,62 @@ def fetch_paper_if_needed(pmid: str, output_dir: str) -> None:
         return
     
     # If paper ID starts with "UPLOAD_", this is an uploaded file
-    # Don't try to fetch from PubMed - paper.json should have been created during upload
+    # Try to recreate paper.json from the PDF file if it exists
     if pmid.upper().startswith("UPLOAD_"):
-        raise PipelineError(
-            f"paper.json not found for uploaded file {pmid}. "
-            "The PDF extraction may have failed. Please check the upload and try again."
-        )
+        output_path = Path(output_dir)
+        
+        # Look for PDF files in the output directory
+        pdf_files = list(output_path.glob("*.pdf"))
+        
+        if not pdf_files:
+            raise PipelineError(
+                f"paper.json not found for uploaded file {pmid}, and no PDF file found in {output_dir}. "
+                "The PDF extraction may have failed. Please check the upload and try again."
+            )
+        
+        # Use the first PDF file found (there should only be one)
+        pdf_file = pdf_files[0]
+        logger.info(f"paper.json not found for uploaded file {pmid}, attempting to recreate from PDF: {pdf_file}")
+        
+        try:
+            # Import PDF extraction function
+            # Try multiple import strategies since pipeline runs as subprocess
+            import sys
+            from pathlib import Path as PathLib
+            
+            # Strategy 1: Try importing directly (if web is in PYTHONPATH)
+            try:
+                from web.pdf_extractor import extract_pdf_content
+            except ImportError:
+                # Strategy 2: Add web directory to path and import
+                web_dir = PathLib(__file__).parent.parent / "web"
+                if web_dir.exists() and str(web_dir) not in sys.path:
+                    sys.path.insert(0, str(web_dir))
+                from pdf_extractor import extract_pdf_content
+            
+            # Extract PDF content and create paper.json
+            paper_data = extract_pdf_content(pdf_file, filename=pdf_file.name)
+            
+            # Save to paper.json
+            with open(paper_json, "w", encoding="utf-8") as f:
+                json.dump(paper_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Successfully recreated paper.json from PDF for {pmid}")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import pdf_extractor: {e}")
+            raise PipelineError(
+                f"paper.json not found for uploaded file {pmid} and could not import PDF extraction module. "
+                "The PDF extraction may have failed. Please check the upload and try again."
+            )
+        except Exception as e:
+            logger.error(f"Failed to recreate paper.json from PDF: {e}", exc_info=True)
+            raise PipelineError(
+                f"paper.json not found for uploaded file {pmid} and failed to recreate it from PDF: {str(e)}. "
+                "The PDF extraction may have failed. Please check the upload and try again."
+            )
+        
+        return
     
     # Paper.json doesn't exist and it's not an uploaded file, fetch from PubMed
     fetch_paper(pmid, output_dir)
