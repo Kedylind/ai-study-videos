@@ -46,3 +46,6 @@ staticfiles/
 # Temporary test files and generated content
 kyle-code/tmp/
 pipeline/tmp/
+
+# Cursor ignore
+.cursorignore
