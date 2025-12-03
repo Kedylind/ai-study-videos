@@ -402,86 +402,7 @@ main {
     display: inline-block;
 }
 
-/* File Upload Area */
-.file-upload-area {
-    border: 3px dashed var(--accent-blue);
-    border-radius: 16px;
-    padding: 50px 30px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    background: linear-gradient(135deg, rgba(232, 240, 247, 0.6) 0%, rgba(232, 240, 247, 0.2) 100%);
-    position: relative;
-    overflow: hidden;
-    box-sizing: border-box;
-    width: 100%;
-}
-
-.file-upload-area::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(45deg, transparent 30%, rgba(255, 255, 255, 0.1) 50%, transparent 70%);
-    opacity: 0;
-    transition: opacity 0.3s ease;
-}
-
-.file-upload-area:hover {
-    background: linear-gradient(135deg, rgba(232, 240, 247, 0.8) 0%, rgba(232, 240, 247, 0.4) 100%);
-    border-color: var(--secondary-blue);
-    transform: translateY(-5px);
-    box-shadow: 0 10px 30px rgba(74, 123, 167, 0.2);
-}
-
-.file-upload-area:hover::before {
-    opacity: 1;
-}
-
-.file-upload-area.drag-over {
-    background: linear-gradient(135deg, rgba(74, 123, 167, 0.15) 0%, rgba(74, 123, 167, 0.05) 100%);
-    border-color: var(--primary-blue);
-    box-shadow: 0 15px 40px rgba(74, 123, 167, 0.3);
-    transform: translateY(-8px) scale(1.02);
-}
-
-.upload-icon {
-    font-size: 56px;
-    margin-bottom: 18px;
-    display: block;
-    animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-    0%, 100% {
-        transform: scale(1);
-    }
-    50% {
-        transform: scale(1.1);
-    }
-}
-
-.file-upload-area p {
-    color: var(--primary-blue);
-    font-weight: 700;
-    margin-bottom: 10px;
-    font-size: 18px;
-}
-
-.file-upload-area small {
-    color: var(--text-light);
-    font-size: 15px;
-    display: block;
-}
-
-.file-name {
-    margin-top: 16px;
-    color: var(--success);
-    font-size: 15px;
-    font-weight: 700;
-}
+/* File upload area removed - file upload feature no longer supported */
 
 /* Buttons */
 .button-group {
@@ -694,14 +615,6 @@ main {
         font-size: 16px;
     }
 
-    .file-upload-area {
-        padding: 40px 20px;
-    }
-
-    .upload-icon {
-        font-size: 48px;
-        margin-bottom: 15px;
-    }
 }
 
 @media (max-width: 480px) {
@@ -755,14 +668,6 @@ main {
         margin-bottom: 10px;
     }
 
-    .file-upload-area {
-        padding: 30px 16px;
-    }
-
-    .upload-icon {
-        font-size: 40px;
-        margin-bottom: 12px;
-    }
 
     .button-group {
         margin-top: 35px;

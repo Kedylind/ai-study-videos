@@ -2,93 +2,18 @@
 
 document.addEventListener('DOMContentLoaded', function() {
     // Elements
-    const fileInputs = document.querySelectorAll('input[type="file"]');
-    const fileUploadArea = document.querySelector('.file-upload-area');
-    const fileNameDisplay = document.querySelector('.file-name');
     const form = document.querySelector('form');
     const submitBtn = document.querySelector('.btn-primary');
     const textInputs = document.querySelectorAll('input[type="text"]');
-
-    // Drag and drop functionality
-    if (fileUploadArea) {
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            fileUploadArea.addEventListener(eventName, preventDefaults, false);
-        });
-
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            fileUploadArea.addEventListener(eventName, highlight, false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            fileUploadArea.addEventListener(eventName, unhighlight, false);
-        });
-
-        function highlight(e) {
-            fileUploadArea.classList.add('drag-over');
-        }
-
-        function unhighlight(e) {
-            fileUploadArea.classList.remove('drag-over');
-        }
-
-        fileUploadArea.addEventListener('drop', handleDrop, false);
-
-        function handleDrop(e) {
-            const dt = e.dataTransfer;
-            const files = dt.files;
-            handleFiles(files);
-        }
-
-        fileUploadArea.addEventListener('click', () => {
-            const fileInput = document.querySelector('input[type="file"]');
-            if (fileInput) {
-                fileInput.click();
-            }
-        });
-    }
-
-    // Handle file selection
-    fileInputs.forEach(input => {
-        input.addEventListener('change', function() {
-            handleFiles(this.files);
-        });
-    });
-
-    function handleFiles(files) {
-        if (files.length > 0) {
-            const file = files[0];
-            const fileName = file.name;
-            const fileSize = (file.size / 1024 / 1024).toFixed(2); // Convert to MB
-
-            if (fileNameDisplay) {
-                fileNameDisplay.innerHTML = `
-                    <span style="color: #10b981;">✓</span>
-                    <strong>${fileName}</strong> (${fileSize} MB)
-                `;
-            }
-
-            // Add visual feedback
-            if (fileUploadArea) {
-                fileUploadArea.style.borderColor = '#10b981';
-                fileUploadArea.style.background = 'rgba(16, 185, 129, 0.05)';
-            }
-        }
-    }
 
     // Form validation
     if (form) {
         form.addEventListener('submit', function(e) {
             const textInputValue = Array.from(textInputs).some(input => input.value.trim());
-            const fileInputValue = Array.from(fileInputs).some(input => input.files.length > 0);
 
-            if (!textInputValue && !fileInputValue) {
+            if (!textInputValue) {
                 e.preventDefault();
-                showAlert('Please provide either a PubMed ID or upload a PDF file.', 'error');
+                showAlert('Please provide a PubMed ID or PMC ID.', 'error');
             }
         });
     }
@@ -108,9 +33,8 @@ document.addEventListener('DOMContentLoaded', function() {
     if (submitBtn && form) {
         form.addEventListener('submit', function(e) {
             const textInputValue = Array.from(textInputs).some(input => input.value.trim());
-            const fileInputValue = Array.from(fileInputs).some(input => input.files.length > 0);
 
-            if (textInputValue || fileInputValue) {
+            if (textInputValue) {
                 submitBtn.disabled = true;
                 submitBtn.classList.add('loading');
                 const originalText = submitBtn.textContent;

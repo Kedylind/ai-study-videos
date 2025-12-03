@@ -48,7 +48,6 @@ The `generate-video` command runs the complete pipeline:
 1. **fetch-paper**: Download paper from PubMed Central
 2. **generate-script**: Create video script with scenes using Gemini
 3. **generate-audio**: Generate TTS audio for each scene
-4. **generate-videos**: Create video clips with Runway Veo 3.1
-5. **add-captions**: Add burned-in captions to videos
+4. **generate-videos**: Create video clips with Runway Veo 3.1 and merge into final video
 
 Output will be saved to the specified output directory (e.g., `tmp/PMC10979640/`).

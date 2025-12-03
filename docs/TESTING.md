@@ -139,7 +139,7 @@ python tests/test_status_updates.py TEST123 --step generate-audio
 python tests/test_status_updates.py TEST123 --step generate-videos
 
 # Test at 100% (completed)
-python tests/test_status_updates.py TEST123 --step add-captions
+python tests/test_status_updates.py TEST123 --step generate-videos
 
 # Create job for specific user
 python tests/test_status_updates.py TEST123 --step generate-script --user admin
@@ -150,7 +150,7 @@ python tests/test_status_updates.py TEST123 --step generate-script --user admin
 2. `generate-script` (40%) - Generates video script
 3. `generate-audio` (60%) - Generates audio narration
 4. `generate-videos` (80%) - Generates video clips
-5. `add-captions` (100%) - Adds captions and creates final video
+4. `generate-videos` (100%) - Creates final video
 
 **View JSON Status:**
 ```

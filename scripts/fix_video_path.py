@@ -11,7 +11,7 @@ import django
 from pathlib import Path
 
 # Add project directory to path
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent  # Go up from scripts/ to project root
 sys.path.insert(0, str(BASE_DIR))
 
 # Set Django settings

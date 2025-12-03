@@ -23,7 +23,7 @@ Steps (in order):
     2. generate-script (40%) - Creates script.json
     3. generate-audio (60%) - Creates audio.wav and audio_metadata.json
     4. generate-videos (80%) - Creates clips/.videos_complete marker
-    5. add-captions (100%) - Creates final_video.mp4
+    (4 steps total, final_video.mp4 created by generate-videos step)
 """
 
 import os
@@ -135,24 +135,8 @@ def create_step_files(output_dir: Path, step_name: str):
         }, indent=2))
         print(f"[OK] Created {video_metadata}")
         
-    elif step_name == "add-captions":
-        # Step 5: Final video with captions
-        # Ensure prerequisites exist
-        if not (output_dir / "clips" / ".videos_complete").exists():
-            create_step_files(output_dir, "generate-videos")
-        
-        # Create a minimal MP4 file (just the header, not a valid video)
-        # MP4 files start with specific boxes. We'll create a minimal container.
-        # In reality, we'd need a proper MP4 encoder, but for testing status updates,
-        # we just need the file to exist. The status page checks file existence.
-        final_video = output_dir / "final_video.mp4"
-        
-        # Create a dummy file with MP4 signature
-        # Real MP4s are complex, but for file existence testing this is fine
-        mp4_header = b'ftyp' + b'mp41' + b'\x00' * 20  # Minimal valid MP4 start
-        final_video.write_bytes(mp4_header)
-        print(f"[OK] Created {final_video} (dummy file for testing)")
-        
+    # Note: add-captions step has been removed from pipeline
+    # Final video is created by generate-videos step
     else:
         raise ValueError(f"Unknown step: {step_name}")
 
@@ -182,13 +166,12 @@ def create_task_files(output_dir: Path, task_id: str, status: str = "running"):
 
 def update_job_record(paper_id: str, step_name: str, task_id: str, user: User = None):
     """Create or update a VideoGenerationJob record in the database."""
-    # Map step names to progress percentages
+    # Map step names to progress percentages (4 steps: 25%, 50%, 75%, 100%)
     step_progress = {
-        "fetch-paper": (20, "fetch-paper"),
-        "generate-script": (40, "generate-script"),
-        "generate-audio": (60, "generate-audio"),
-        "generate-videos": (80, "generate-videos"),
-        "add-captions": (100, None),  # None means completed, no current step
+        "fetch-paper": (25, "fetch-paper"),
+        "generate-script": (50, "generate-script"),
+        "generate-audio": (75, "generate-audio"),
+        "generate-videos": (100, None),  # None means completed, no current step
     }
     
     progress_percent, current_step = step_progress.get(step_name, (0, step_name))
@@ -259,7 +242,7 @@ def simulate_progress(paper_id: str, step_name: str, user: User = None):
     print()
     
     # Create files for all steps up to and including the target step
-    steps = ["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"]
+    steps = ["fetch-paper", "generate-script", "generate-audio", "generate-videos"]
     target_index = steps.index(step_name) if step_name in steps else -1
     
     if target_index == -1:
@@ -272,7 +255,7 @@ def simulate_progress(paper_id: str, step_name: str, user: User = None):
         create_step_files(output_dir, steps[i])
     
     # Create task tracking files
-    status = "completed" if step_name == "add-captions" else "running"
+    status = "completed" if step_name == "generate-videos" else "running"
     create_task_files(output_dir, task_id, status)
     
     # Update database job record
@@ -285,7 +268,7 @@ def simulate_progress(paper_id: str, step_name: str, user: User = None):
 
 def auto_progress(paper_id: str, delay: int = 3, user: User = None):
     """Automatically progress through all steps with delays."""
-    steps = ["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"]
+    steps = ["fetch-paper", "generate-script", "generate-audio", "generate-videos"]
     
     print(f"\n[INFO] Auto-progressing through all steps for: {paper_id}")
     print(f"   Delay between steps: {delay} seconds")
@@ -311,7 +294,7 @@ def main():
     parser.add_argument("paper_id", help="Paper ID to simulate (e.g., TEST123)")
     parser.add_argument(
         "--step",
-        choices=["fetch-paper", "generate-script", "generate-audio", "generate-videos", "add-captions"],
+        choices=["fetch-paper", "generate-script", "generate-audio", "generate-videos"],
         help="Simulate progress up to this step"
     )
     parser.add_argument(
