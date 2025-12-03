@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 
 from django.conf import settings
 from django.utils import timezone
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 from django.contrib.auth import login
@@ -102,6 +103,52 @@ def _check_video_exists(pmid: str, user=None) -> tuple[bool, Optional[str]]:
                         logger.warning(f"final_video_path set but file not found in storage: {job.final_video_path}")
                 except Exception as e:
                     logger.warning(f"Error checking final_video_path in R2: {e}")
+            
+            # Third try: If both fields are empty but video exists in R2, search for it
+            if not job.final_video and not job.final_video_path and settings.USE_CLOUD_STORAGE:
+                try:
+                    from django.core.files.storage import default_storage
+                    # Try to find video file by searching for patterns
+                    # Pattern: videos/YYYY/MM/DD/PMCID_final_video_*.mp4
+                    found_path = None
+                    
+                    # Try common date patterns
+                    from datetime import datetime
+                    now = datetime.now()
+                    
+                    # Check recent dates (today and yesterday)
+                    for days_ago in range(7):  # Check last 7 days
+                        check_date = now - timedelta(days=days_ago)
+                        date_path = f"videos/{check_date.year}/{check_date.month:02d}/{check_date.day:02d}/"
+                        
+                        # Try to find files matching the pattern
+                        try:
+                            # List files in this date directory
+                            if hasattr(default_storage, 'listdir'):
+                                try:
+                                    _, files = default_storage.listdir(date_path)
+                                    for filename in files:
+                                        if filename.startswith(f"{pmid}_final_video_") and filename.endswith('.mp4'):
+                                            found_path = date_path + filename
+                                            logger.info(f"Found video in R2 storage: {found_path}")
+                                            break
+                                except:
+                                    pass
+                            
+                            if found_path:
+                                break
+                        except:
+                            continue
+                    
+                    if found_path and default_storage.exists(found_path):
+                        # Update database with found path
+                        job.final_video_path = found_path
+                        job.save(update_fields=['final_video_path', 'updated_at'])
+                        logger.info(f"Auto-updated final_video_path: {found_path}")
+                        video_url = reverse("serve_video", args=[pmid])
+                        return True, video_url
+                except Exception as e:
+                    logger.warning(f"Error searching for video in R2: {e}")
     
     except Exception as e:
         logger.warning(f"Error checking video in database: {e}")
