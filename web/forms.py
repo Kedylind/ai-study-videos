@@ -23,8 +23,16 @@ class PaperUploadForm(forms.Form):
         help_text="Enter the access code to generate videos",
         widget=forms.PasswordInput(attrs={
             "placeholder": "Enter access code",
-            "autocomplete": "off",
-            "data-form-type": "other",  # Additional hint for password managers
+            "autocomplete": "one-time-code",  # Designed for codes, prevents password manager autofill
+            "data-form-type": "other",
+            "data-lpignore": "true",  # LastPass ignore
+            "data-1p-ignore": "true",  # 1Password ignore
+            "data-bwignore": "true",  # Bitwarden ignore
+            "data-dashlane-ignore": "true",  # Dashlane ignore
+            "readonly": "readonly",  # Will be removed by JavaScript on focus
+            "onfocus": "this.removeAttribute('readonly')",
+            "onclick": "this.removeAttribute('readonly')",
+            "onkeydown": "this.removeAttribute('readonly')",
         }),
     )
 

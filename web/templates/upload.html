@@ -75,8 +75,12 @@
                 {% endif %}
 
                 <!-- Form -->
-                <form method="post" enctype="multipart/form-data" autocomplete="off">
+                <form method="post" enctype="multipart/form-data" autocomplete="off" data-form-type="other">
                     {% csrf_token %}
+                    
+                    <!-- Hidden dummy fields to trick password managers -->
+                    <input type="text" name="fake_username" autocomplete="username" style="position: absolute; left: -9999px; opacity: 0; pointer-events: none; tabindex: -1;" tabindex="-1" aria-hidden="true">
+                    <input type="password" name="fake_password" autocomplete="current-password" style="position: absolute; left: -9999px; opacity: 0; pointer-events: none; tabindex: -1;" tabindex="-1" aria-hidden="true">
 
                     <!-- PubMed ID Input -->
                     <div class="form-group">
@@ -124,7 +128,9 @@
                     <!-- Access Code Input -->
                     <div class="form-group">
                         <label for="{{ form.access_code.id_for_label }}">{{ form.access_code.label }}</label>
-                        {{ form.access_code }}
+                        <div style="position: relative;">
+                            {{ form.access_code }}
+                        </div>
                         {% if form.access_code.help_text %}
                             <p class="help-text">{{ form.access_code.help_text|safe }}</p>
                         {% endif %}
@@ -165,8 +171,75 @@
     <!-- Scripts -->
     <script src="{% static 'web/js/upload.js' %}"></script>
     <script>
-        // Show loading screen on form submission
+        // Aggressively prevent password manager autofill on upload form
         document.addEventListener('DOMContentLoaded', function() {
+            // Get all input fields in the upload form
+            const form = document.querySelector('form[method="post"][enctype="multipart/form-data"]');
+            if (form) {
+                const inputs = form.querySelectorAll('input[type="text"], input[type="password"]');
+                
+                inputs.forEach(function(input) {
+                    // Force autocomplete attributes immediately
+                    if (input.type === 'password') {
+                        input.setAttribute('autocomplete', 'one-time-code');
+                    } else {
+                        input.setAttribute('autocomplete', 'off');
+                    }
+                    
+                    // Remove readonly on any interaction
+                    const removeReadonly = function() {
+                        input.removeAttribute('readonly');
+                    };
+                    input.addEventListener('focus', removeReadonly);
+                    input.addEventListener('click', removeReadonly);
+                    input.addEventListener('keydown', removeReadonly);
+                    input.addEventListener('touchstart', removeReadonly);
+                    
+                    // Track if user has interacted
+                    let userInteracted = false;
+                    input.addEventListener('keypress', function() {
+                        userInteracted = true;
+                    });
+                    input.addEventListener('input', function() {
+                        userInteracted = true;
+                    });
+                    
+                    // Monitor for autofill and clear it if detected
+                    let lastValue = input.value;
+                    const checkAutofill = setInterval(function() {
+                        if (input.value !== lastValue && !userInteracted) {
+                            // Value changed but user didn't type - likely autofill
+                            if (input.type === 'password' && input.value.length > 0) {
+                                // Clear autofilled password
+                                input.value = '';
+                                input.focus();
+                                // Re-apply prevention
+                                input.setAttribute('autocomplete', 'one-time-code');
+                                input.setAttribute('readonly', 'readonly');
+                            }
+                        }
+                        lastValue = input.value;
+                    }, 100);
+                    
+                    // Stop monitoring after 5 seconds
+                    setTimeout(function() {
+                        clearInterval(checkAutofill);
+                    }, 5000);
+                    
+                    // Additional prevention: periodically re-apply attributes
+                    setInterval(function() {
+                        if (input.type === 'password') {
+                            input.setAttribute('autocomplete', 'one-time-code');
+                        }
+                    }, 1000);
+                });
+                
+                // Prevent form autofill
+                form.setAttribute('autocomplete', 'off');
+                form.setAttribute('data-form-type', 'other');
+            }
+            
+            // Show loading screen on form submission
             const forms = document.querySelectorAll('form');
             forms.forEach(form => {
                 form.addEventListener('submit', function() {
