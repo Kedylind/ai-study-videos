@@ -49,3 +49,33 @@ class VideoGenerationJob(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.paper_id} - {self.status}"
 
+
+class ABTestEvent(models.Model):
+    """Model to track A/B test analytics events (impressions and clicks)."""
+    
+    EVENT_TYPE_CHOICES = [
+        ('impression', 'Impression'),
+        ('click', 'Click'),
+    ]
+    
+    VARIANT_CHOICES = [
+        ('A', 'Variant A (kudos)'),
+        ('B', 'Variant B (thanks)'),
+    ]
+    
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES)
+    variant = models.CharField(max_length=1, choices=VARIANT_CHOICES)
+    session_id = models.CharField(max_length=255, db_index=True)  # Track unique sessions
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['event_type', 'variant']),
+            models.Index(fields=['session_id', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.event_type} - {self.get_variant_display()} - {self.created_at}"

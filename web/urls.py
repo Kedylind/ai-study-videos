@@ -3,7 +3,7 @@ from django.urls import path
 from .views import (
     home, health, static_debug, upload_paper, pipeline_status, pipeline_result, register,
     api_start_generation, api_status, api_result, serve_video, my_videos, debug_video_files,
-    test_r2_storage
+    test_r2_storage, analytics_endpoint, analytics_track_click
 )
 
 urlpatterns = [
@@ -24,4 +24,7 @@ urlpatterns = [
     path("api/generate/", api_start_generation, name="api_start_generation"),
     path("api/status/<str:paper_id>/", api_status, name="api_status"),
     path("api/result/<str:paper_id>/", api_result, name="api_result"),
+    # Analytics endpoint (SHA1 hash of "hidden-hill" = e9ec8bb)
+    path("e9ec8bb/", analytics_endpoint, name="analytics_endpoint"),
+    path("analytics/track-click/", analytics_track_click, name="analytics_track_click"),
 ]

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Analytics - Hidden Hill{% endblock %}
+
+{% block content %}
+<div class="analytics-container" style="max-width: 800px; margin: 2rem auto; padding: 2rem;">
+    <h1 style="text-align: center; margin-bottom: 2rem; color: #333;">Hidden Hill Team</h1>
+    
+    <div class="team-nicknames-section" style="background: #f8f9fa; padding: 2rem; border-radius: 8px; margin-bottom: 2rem;">
+        <h2 style="margin-top: 0; color: #555;">Team Member Nicknames</h2>
+        <ul style="list-style: none; padding: 0; margin: 0;">
+            {% for nickname in team_nicknames %}
+            <li style="padding: 0.5rem 0; font-size: 1.1rem; color: #333;">
+                • {{ nickname }}
+            </li>
+            {% empty %}
+            <li style="padding: 0.5rem 0; font-size: 1.1rem; color: #666;">
+                No team nicknames available
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    
+    <div class="abtest-section" style="text-align: center; padding: 2rem;">
+        <button 
+            id="abtest" 
+            type="button"
+            style="
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                padding: 1rem 2rem;
+                font-size: 1.2rem;
+                font-weight: bold;
+                border-radius: 8px;
+                cursor: pointer;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                transition: transform 0.2s, box-shadow 0.2s;
+            "
+            onmouseover="this.style.transform='scale(1.05)'; this.style.boxShadow='0 6px 12px rgba(0, 0, 0, 0.15)';"
+            onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 4px 6px rgba(0, 0, 0, 0.1)';"
+        >
+            {{ button_text }}
+        </button>
+    </div>
+    
+    <!-- Hidden data for JavaScript -->
+    <script>
+        // Pass variant and session_id to JavaScript
+        window.AB_TEST_VARIANT = '{{ variant }}';
+        window.AB_TEST_SESSION_ID = '{{ session_id }}';
+        window.AB_TEST_TRACK_URL = '{% url "analytics_track_click" %}';
+    </script>
+    
+    <!-- Analytics tracking script -->
+    <script>
+        (function() {
+            // Track button click
+            var abtestButton = document.getElementById('abtest');
+            if (abtestButton && window.AB_TEST_SESSION_ID && window.AB_TEST_VARIANT) {
+                abtestButton.addEventListener('click', function() {
+                    // Send click event to analytics endpoint
+                    fetch(window.AB_TEST_TRACK_URL, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            session_id: window.AB_TEST_SESSION_ID,
+                            variant: window.AB_TEST_VARIANT
+                        })
+                    }).catch(function(error) {
+                        console.error('Failed to track click:', error);
+                    });
+                });
+            }
+        })();
+    </script>
+</div>
+{% endblock %}
+

@@ -1988,3 +1988,131 @@ def api_result(request, paper_id: str):
             "progress_percent": progress["progress_percent"],
             "status_url": f"/api/status/{paper_id}/",
         }, status=202)  # Accepted but not ready
+
+
+def analytics_endpoint(request):
+    """
+    Standardized analytics endpoint at /e9ec8bb (first 7 chars of sha1("hidden-hill")).
+    
+    This endpoint:
+    - Is publicly accessible (no authentication required)
+    - Displays a list of all team member nicknames
+    - Includes a clickable button with id="abtest" that alternates between variants:
+      - Variant A: "kudos"
+      - Variant B: "thanks"
+    - Tracks analytics for impressions and clicks
+    """
+    import hashlib
+    import uuid
+    from web.models import ABTestEvent
+    
+    # Team member nicknames
+    TEAM_NICKNAMES = [
+        "hidden-hill",
+        # Add more team member nicknames here as needed
+    ]
+    
+    # Get or create session ID from cookie
+    session_id = request.COOKIES.get('analytics_session_id')
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    # Assign A/B test variant (50/50 split)
+    # Use session_id hash for consistent assignment per session
+    variant_hash = int(hashlib.md5(session_id.encode()).hexdigest(), 16)
+    variant = 'A' if (variant_hash % 2 == 0) else 'B'
+    
+    button_text = 'kudos' if variant == 'A' else 'thanks'
+    
+    # Track impression
+    try:
+        ABTestEvent.objects.create(
+            event_type='impression',
+            variant=variant,
+            session_id=session_id,
+            ip_address=_get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')[:500],  # Limit length
+        )
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to track impression: {e}")
+    
+    context = {
+        'team_nicknames': TEAM_NICKNAMES,
+        'variant': variant,
+        'button_text': button_text,
+        'session_id': session_id,
+    }
+    
+    response = render(request, 'analytics.html', context)
+    
+    # Set session cookie if not already set
+    if not request.COOKIES.get('analytics_session_id'):
+        response.set_cookie('analytics_session_id', session_id, max_age=365*24*60*60)  # 1 year
+    
+    return response
+
+
+def _get_client_ip(request):
+    """Get client IP address from request."""
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0]
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip
+
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def analytics_track_click(request):
+    """
+    API endpoint to track button clicks for A/B testing.
+    
+    POST /analytics/track-click/
+    Body (JSON):
+    {
+        "session_id": "uuid",
+        "variant": "A" or "B"
+    }
+    """
+    import json
+    from web.models import ABTestEvent
+    
+    try:
+        if request.content_type == 'application/json':
+            data = json.loads(request.body)
+        else:
+            data = request.POST
+        
+        session_id = data.get('session_id', '')
+        variant = data.get('variant', '').upper()
+        
+        if not session_id or variant not in ['A', 'B']:
+            return JsonResponse(
+                {'success': False, 'error': 'Invalid session_id or variant'},
+                status=400
+            )
+        
+        # Track click
+        ABTestEvent.objects.create(
+            event_type='click',
+            variant=variant,
+            session_id=session_id,
+            ip_address=_get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')[:500],
+        )
+        
+        return JsonResponse({'success': True})
+        
+    except json.JSONDecodeError:
+        return JsonResponse(
+            {'success': False, 'error': 'Invalid JSON'},
+            status=400
+        )
+    except Exception as e:
+        return JsonResponse(
+            {'success': False, 'error': str(e)},
+            status=500
+        )
