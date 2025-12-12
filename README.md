@@ -44,6 +44,127 @@ Scientific research is often locked behind paywalls and buried in technical jarg
 - **HTML/CSS/JavaScript** - Traditional web stack
 - **Django Templates** - Server-side rendering
 
+## 📋 Setup Instructions (Local Development)
+
+### Prerequisites
+
+- Python 3.12+
+- PostgreSQL (for production) or SQLite (for local development)
+- Redis (for Celery task queue)
+- FFmpeg (for video processing)
+- Git
+
+### Step 1: Clone the Repository
+
+```bash
+git clone <repository-url>
+cd Hidden-Hill
+```
+
+### Step 2: Create Virtual Environment
+
+**Windows (PowerShell):**
+```powershell
+python -m venv venv
+.\venv\Scripts\activate.ps1
+```
+
+**Linux/Mac:**
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+
+### Step 3: Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 4: Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+# Required API Keys
+GEMINI_API_KEY=your-gemini-api-key-here
+RUNWAYML_API_SECRET=your-runway-api-key-here
+
+# Django Settings
+SECRET_KEY=your-django-secret-key-here
+DEBUG=True
+VIDEO_ACCESS_CODE=your-access-code-here
+
+# Database (optional - defaults to SQLite for local)
+DATABASE_URL=sqlite:///db.sqlite3
+
+# Celery (Redis)
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+
+# Cloud Storage (optional for local development)
+USE_CLOUD_STORAGE=False
+# If using Cloudflare R2:
+# AWS_ACCESS_KEY_ID=your-r2-access-key
+# AWS_SECRET_ACCESS_KEY=your-r2-secret-key
+# AWS_STORAGE_BUCKET_NAME=your-bucket-name
+# AWS_S3_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
+```
+
+**Generate Django Secret Key:**
+```bash
+python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+```
+
+### Step 5: Database Setup
+
+```bash
+python manage.py migrate
+python manage.py createsuperuser  # Optional: create admin user
+```
+
+### Step 6: Start Redis (for Celery)
+
+**Windows:**
+- Download Redis from https://github.com/microsoftarchive/redis/releases
+- Or use WSL/Docker
+
+**Linux/Mac:**
+```bash
+# Install Redis
+sudo apt-get install redis-server  # Ubuntu/Debian
+brew install redis  # macOS
+
+# Start Redis
+redis-server
+```
+
+### Step 7: Start Celery Worker
+
+**Windows (PowerShell):**
+```powershell
+.\scripts\start_celery_worker.ps1
+```
+
+**Linux/Mac:**
+```bash
+celery -A config worker --loglevel=info
+```
+
+### Step 8: Run Development Server
+
+```bash
+python manage.py runserver
+```
+
+The application will be available at `http://localhost:8000/`
+
+### Step 9: Collect Static Files (Production-like)
+
+```bash
+python manage.py collectstatic --noinput
+```
+
 ## 🚢 Deployment Information
 
 ### Production Environment
@@ -144,94 +265,108 @@ worker: celery -A config worker --loglevel=info --concurrency=2 --max-tasks-per-
 
 ## 🧪 A/B Test Endpoint
 
-### How to Compute the A/B Test Endpoint
+### How to Compute and Access the A/B Test Endpoint
 
-The A/B test endpoint is computed using a SHA-1 hash of team nicknames. Here's how to compute and access it:
+The A/B test endpoint uses the first 7 characters of the SHA-1 hash of the team nickname "hidden-hill".
 
-#### Step 1: List Team Nicknames
-
-Team nicknames should be defined (typically in a configuration file or database). For example:
-- "HiddenHill"
-- "KyleAI"
-- "ScienceVideos"
-
-#### Step 2: Compute SHA-1 Hash
+#### Step 1: Compute SHA-1 Hash
 
 **Python:**
 ```python
 import hashlib
 
-team_nickname = "HiddenHill"  # Replace with actual team nickname
+team_nickname = "hidden-hill"
 hash_object = hashlib.sha1(team_nickname.encode())
 hex_dig = hash_object.hexdigest()
-print(hex_dig)  # e.g., "a1b2c3d4e5f6..."
+first_7_chars = hex_dig[:7]
+print(first_7_chars)  # Output: "e9ec8bb"
 ```
 
 **Command Line (Linux/Mac):**
 ```bash
-echo -n "HiddenHill" | sha1sum
+echo -n "hidden-hill" | sha1sum | cut -c1-7
+# Output: e9ec8bb
 ```
 
 **Command Line (Windows PowerShell):**
 ```powershell
-$teamNickname = "HiddenHill"
+$teamNickname = "hidden-hill"
 $sha1 = [System.Security.Cryptography.SHA1]::Create()
 $hash = $sha1.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($teamNickname))
 $hexString = ($hash | ForEach-Object { $_.ToString("x2") }) -join ""
-Write-Host $hexString
+$first7Chars = $hexString.Substring(0, 7)
+Write-Host $first7Chars  # Output: e9ec8bb
 ```
 
-#### Step 3: Access the Endpoint
+#### Step 2: Access the Endpoint
 
-Once the A/B test endpoint is implemented, access it using:
+The A/B test endpoint is live and accessible at:
 
+**Production:**
 ```
-https://ai-study-videos-production.up.railway.app/ab-test/<sha1-hash>/
-```
-
-For example:
-```
-https://ai-study-videos-production.up.railway.app/ab-test/a1b2c3d4e5f6.../
+https://ai-study-videos-production.up.railway.app/e9ec8bb/
 ```
 
-#### Current Status
-
-⚠️ **Note**: The A/B test endpoint is currently not implemented. According to the Sprint 4 report, it needs to:
-- Compute SHA-1 hash of team nickname
-- Create endpoint route in `web/urls.py`
-- Display list of team nicknames
-- Add analytics tracking for variant impressions
-
-#### Implementation Example
-
-When implemented, the endpoint should:
-1. Accept a SHA-1 hash in the URL path
-2. Match it to a team nickname
-3. Display randomized button text variants
-4. Track impressions and clicks via analytics
-
-**Example View (to be implemented):**
-```python
-# web/views.py
-import hashlib
-from django.shortcuts import render
-
-def ab_test(request, hash_value):
-    # Match hash to team nickname
-    team_nicknames = ["HiddenHill", "KyleAI", "ScienceVideos"]
-    matched_nickname = None
-    
-    for nickname in team_nicknames:
-        if hashlib.sha1(nickname.encode()).hexdigest() == hash_value:
-            matched_nickname = nickname
-            break
-    
-    # Display A/B test page with variants
-    return render(request, 'ab_test.html', {
-        'team_nickname': matched_nickname,
-        'hash': hash_value
-    })
+**Local Development:**
 ```
+http://localhost:8000/e9ec8bb/
+```
+
+### Implementation Details
+
+#### Features
+
+✅ **Publicly Accessible** - No authentication required  
+✅ **Team Nickname Display** - Shows list of all team member nicknames  
+✅ **A/B Testing** - Button text alternates between two variants:
+   - **Variant A**: "kudos"
+   - **Variant B**: "thanks"
+✅ **Analytics Tracking** - Tracks impressions and clicks
+✅ **Session-Based** - Consistent variant assignment per session (via cookie)
+
+#### Team Nicknames
+
+The endpoint displays the following team member nicknames:
+- charming-leopard
+- Vicent (ID unknown)
+- Kenza (ID unknown)
+- Omar (ID unknown)
+- Nora (ID unknown)
+- Skel (ID unknown)
+
+#### How It Works
+
+1. **Variant Assignment**: Users are assigned to Variant A or B based on a hash of their session ID (50/50 split)
+2. **Impression Tracking**: Each page view automatically tracks an impression event
+3. **Click Tracking**: Button clicks are tracked via AJAX to `/analytics/track-click/`
+4. **Session Persistence**: Session ID is stored in a cookie for consistent variant assignment
+
+#### Analytics Data
+
+The A/B test data is stored in the `ABTestEvent` model with the following fields:
+- `event_type`: "impression" or "click"
+- `variant`: "A" or "B"
+- `session_id`: Unique session identifier
+- `ip_address`: Client IP address
+- `user_agent`: Browser user agent
+- `created_at`: Timestamp
+
+#### View Analytics
+
+Analytics data can be viewed:
+- **Django Admin**: `/admin/web/abtestevent/`
+- **Management Command**: `python manage.py analytics_summary`
+
+#### API Endpoints
+
+- **A/B Test Page**: `GET /e9ec8bb/` - Displays team nicknames and A/B test button
+- **Click Tracking**: `POST /analytics/track-click/` - Tracks button clicks
+  ```json
+  {
+    "session_id": "uuid",
+    "variant": "A" or "B"
+  }
+  ```
 
 ## 📚 Additional Documentation
 

@@ -2008,7 +2008,12 @@ def analytics_endpoint(request):
     
     # Team member nicknames
     TEAM_NICKNAMES = [
-        "hidden-hill",
+        "charming-leopard",
+        "courageous-mallard",
+        "Vicent (ID unknown)",
+        "Kenza (ID unknown)",
+        "Omar (ID unknown)",
+        "Nora (ID unknown)",
         # Add more team member nicknames here as needed
     ]
     
